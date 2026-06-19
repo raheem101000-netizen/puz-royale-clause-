@@ -103,7 +103,7 @@ export class PuzGameLobby extends Room {
     // The joining client sends "room:getState" after registering handlers.
   }
 
-  async onLeave(client: Client, _consented: boolean) {
+  async onLeave(client: Client, _code?: number) {
     const p = this.lobbyPlayers[client.sessionId];
     if (!p) return;
     delete this.lobbyPlayers[client.sessionId];
