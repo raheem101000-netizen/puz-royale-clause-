@@ -88,7 +88,7 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
     <div class="panel">
       <div class="panel-head">
         <span class="panel-title">Public Rooms</span>
-        <button class="btn btn-ghost btn-sm" onclick="refreshRooms()">↻ Refresh</button>
+        <span id="live-dot" style="font-size:10px;color:rgba(76,255,108,0.5);">● LIVE</span>
       </div>
       <div class="room-list" id="room-list">
         <div class="empty-msg">Connecting…</div>
@@ -164,16 +164,20 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
   <div class="countdown-label">GAME STARTING...</div>
 </div>
 
-<script src="/colyseus-adapter.js"></script>
+<!-- Load Colyseus SDK directly (copied at build time) -->
+<script src="/colyseus-sdk.js"></script>
 <script>
 const devMode = new URLSearchParams(window.location.search).get('dev') === 'MEDIATEST';
 const COLORS = ['#4CFF6C','#FF4444','#FFD700','#4BA8FF','#FF8C00','#DA70D6','#00CED1','#FF69B4'];
 let myName = localStorage.getItem('puz_name') || ('Player' + Math.floor(Math.random() * 1000));
 let myColor = COLORS[Math.floor(Math.random() * COLORS.length)];
-let currentRoomId = null;
 let isMaster = false;
 let isReady = false;
 let roomType = 'public';
+
+// Current in-room state
+let gameLobbyRoom = null;
+let mySessionId = null;
 
 document.getElementById('my-name').value = myName;
 document.getElementById('my-name').addEventListener('change', e => {
@@ -181,83 +185,76 @@ document.getElementById('my-name').addEventListener('change', e => {
   localStorage.setItem('puz_name', myName);
 });
 
-const socket = io();
+// ── Server URL ──────────────────────────────────────────────────────────────
+const serverURL = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host;
+const colyseusClient = new Colyseus.Client(serverURL);
 
-socket.on('connect', () => {
-  refreshRooms();
-  const autoJoin = new URLSearchParams(location.search).get('join');
-  if (autoJoin) {
-    socket.emit('room:join', { room: autoJoin, player: { name: myName, color: myColor } });
+// ── Room list: built-in Colyseus LobbyRoom (live push) ─────────────────────
+// localRooms keeps the current list so +/- updates can be applied incrementally.
+let localRooms = [];
+
+async function connectToLobby() {
+  try {
+    const lobbyRoom = await colyseusClient.joinOrCreate('lobby');
+
+    // Full list on join
+    lobbyRoom.onMessage('rooms', (rooms) => {
+      localRooms = rooms;
+      renderRoomList(localRooms);
+    });
+
+    // Room added or updated (data = [roomId, roomData])
+    lobbyRoom.onMessage('+', ([roomId, data]) => {
+      const idx = localRooms.findIndex(r => r.roomId === roomId);
+      if (idx === -1) {
+        localRooms.push({ roomId, ...data });
+      } else {
+        localRooms[idx] = { roomId, ...data };
+      }
+      renderRoomList(localRooms);
+    });
+
+    // Room removed
+    lobbyRoom.onMessage('-', (roomId) => {
+      localRooms = localRooms.filter(r => r.roomId !== roomId);
+      renderRoomList(localRooms);
+    });
+
+    lobbyRoom.onLeave(() => {
+      document.getElementById('live-dot').style.color = 'rgba(255,100,100,0.5)';
+      document.getElementById('live-dot').textContent = '● RECONNECTING';
+      setTimeout(connectToLobby, 2000);
+    });
+  } catch (e) {
+    console.error('[lobby] connect failed', e);
+    setTimeout(connectToLobby, 3000);
   }
-});
+}
 
-socket.on('room:list', ({ rooms }) => renderRoomList(rooms));
-socket.on('room:open', () => refreshRooms());
-socket.on('room:update', () => refreshRooms());
-socket.on('room:close', ({ id }) => { refreshRooms(); if (id === currentRoomId) resetDetail(); });
+connectToLobby();
 
-socket.on('room:join', ({ room, player }) => {
-  currentRoomId = room.id;
-  isMaster = player.master;
-  renderDetail(room);
-  document.getElementById('leave-btn').style.display = 'block';
-  if (isMaster && currentRoomId) {
-    document.getElementById('share-link').value = location.origin + '/rooms?join=' + encodeURIComponent(currentRoomId);
-    document.getElementById('share-section').style.display = 'block';
-  }
-});
-
-socket.on('room:state', room => renderDetail(room));
-socket.on('room:player:join', () => refreshRooms());
-socket.on('room:player:leave', () => {});
-socket.on('room:master', ({ master }) => {
-  isMaster = (master === socket.id);
-  updateStartBtn();
-});
-
-socket.on('room:player:ready', ({ player }) => {
-  if (player.id === socket.id) { isReady = true; updateReadyBtn(); }
-});
-
-socket.on('room:talk', msg => appendChat(msg.player, msg.content));
-
-socket.on('room:launch:start', () => {
-  const overlay = document.getElementById('countdown-overlay');
-  const num = document.getElementById('countdown-num');
-  overlay.classList.add('show');
-  let c = 3; num.textContent = c;
-  const t = setInterval(() => { c--; if (c > 0) num.textContent = c; else clearInterval(t); }, 1000);
-});
-
-socket.on('room:game:start', data => {
-  const devParam = devMode ? '&dev=MEDIATEST' : '';
-  window.location.href = '/play-mp2?room=' + encodeURIComponent(data.roomId) + devParam;
-});
-
-socket.on('room:error', ({ message }) => {
-  document.getElementById('room-error').textContent = message;
-  setTimeout(() => document.getElementById('room-error').textContent = '', 4000);
-});
-
-function refreshRooms() { socket.emit('room:list'); }
-
+// ── Room list rendering ─────────────────────────────────────────────────────
 function renderRoomList(rooms) {
   const el = document.getElementById('room-list');
-  if (!rooms || rooms.length === 0) {
+  const visible = rooms.filter(r => !r.metadata?.open === false || r.metadata?.open !== false);
+  // Show rooms where open is true (or unset) — private rooms are hidden from list (private: true on server)
+  const publicRooms = rooms.filter(r => r.metadata?.open !== false);
+  if (publicRooms.length === 0) {
     el.innerHTML = '<div class="empty-msg">No rooms yet. Create one!</div>';
     return;
   }
-  el.innerHTML = rooms.map(r => `
+  el.innerHTML = publicRooms.map(r => `
     <div class="room-row">
       <div>
-        <div class="room-name">${esc(r.name)}</div>
-        <div class="room-meta">${r.players}/8 players · ${r.open ? 'Public' : 'Private'}</div>
+        <div class="room-name">${esc(r.metadata?.name || r.roomId)}</div>
+        <div class="room-meta">${r.clients || 0}/${r.maxClients || 8} players</div>
       </div>
-      <button class="btn btn-red btn-sm" onclick="joinRoom('${r.id}')">JOIN</button>
+      <button class="btn btn-red btn-sm" onclick="joinRoom('${r.roomId}')">JOIN</button>
     </div>
   `).join('');
 }
 
+// ── Room management ─────────────────────────────────────────────────────────
 function setType(t) {
   roomType = t;
   document.getElementById('c-pub').classList.toggle('active', t === 'public');
@@ -265,42 +262,127 @@ function setType(t) {
   document.getElementById('c-pass-field').style.display = t === 'private' ? 'block' : 'none';
 }
 
-function createRoom() {
+async function createRoom() {
   const name = document.getElementById('c-name').value.trim();
   if (!name) { document.getElementById('c-error').textContent = 'Enter a room name'; return; }
-  socket.emit('room:create', {
-    name,
-    open: roomType === 'public',
-    password: roomType === 'private' ? document.getElementById('c-pass').value : null,
-    player: { name: myName, color: myColor }
-  });
+  const isPrivate = roomType === 'private';
+  const password = isPrivate ? document.getElementById('c-pass').value : null;
   closeModals();
+  try {
+    gameLobbyRoom = await colyseusClient.create('puz_game_lobby', {
+      name, open: !isPrivate, password,
+      playerName: myName, color: myColor,
+    });
+    mySessionId = gameLobbyRoom.sessionId;
+    setupGameLobbyHandlers();
+  } catch (e) {
+    showError('Failed to create room: ' + (e.message || e));
+  }
 }
 
-function joinRoom(roomId) {
-  if (currentRoomId) return;
-  socket.emit('room:join', { room: roomId, player: { name: myName, color: myColor } });
+async function joinRoom(roomId) {
+  if (gameLobbyRoom) return;
+  try {
+    gameLobbyRoom = await colyseusClient.joinById(roomId, {
+      playerName: myName, color: myColor,
+    });
+    mySessionId = gameLobbyRoom.sessionId;
+    setupGameLobbyHandlers();
+  } catch (e) {
+    showError('Failed to join: ' + (e.message || e));
+  }
 }
 
-function joinPrivate() {
+async function joinPrivate() {
   const id = document.getElementById('j-id').value.trim();
   if (!id) { document.getElementById('j-error').textContent = 'Enter a room ID'; return; }
-  socket.emit('room:join', { room: id, password: document.getElementById('j-pass').value, player: { name: myName, color: myColor } });
-  closeModals();
+  const password = document.getElementById('j-pass').value;
+  if (gameLobbyRoom) return;
+  try {
+    gameLobbyRoom = await colyseusClient.joinById(id, {
+      playerName: myName, color: myColor, password,
+    });
+    mySessionId = gameLobbyRoom.sessionId;
+    closeModals();
+    setupGameLobbyHandlers();
+  } catch (e) {
+    document.getElementById('j-error').textContent = 'Join failed: ' + (e.message || 'wrong password or room not found');
+  }
 }
 
 function leaveRoom() {
-  socket.emit('room:leave');
+  if (gameLobbyRoom) { gameLobbyRoom.leave(); gameLobbyRoom = null; }
   resetDetail();
 }
 
+// ── In-room event handlers ──────────────────────────────────────────────────
+function setupGameLobbyHandlers() {
+  const room = gameLobbyRoom;
+
+  // Request current state now that handlers are registered.
+  room.send('room:getState');
+
+  room.onMessage('room:join', ({ room: roomData, player }) => {
+    isMaster = player.master;
+    renderDetail(roomData);
+    document.getElementById('leave-btn').style.display = 'block';
+    if (isMaster) {
+      document.getElementById('share-link').value = location.origin + '/rooms?join=' + encodeURIComponent(room.roomId);
+      document.getElementById('share-section').style.display = 'block';
+    }
+  });
+
+  room.onMessage('room:state', (roomData) => renderDetail(roomData));
+
+  room.onMessage('room:player:join', () => {});
+  room.onMessage('room:player:leave', () => {});
+
+  room.onMessage('room:master', ({ master }) => {
+    isMaster = (master === mySessionId);
+    updateStartBtn();
+    if (isMaster) {
+      document.getElementById('share-link').value = location.origin + '/rooms?join=' + encodeURIComponent(room.roomId);
+      document.getElementById('share-section').style.display = 'block';
+    }
+  });
+
+  room.onMessage('room:player:ready', ({ player }) => {
+    if (player.id === mySessionId) { isReady = true; updateReadyBtn(); }
+  });
+
+  room.onMessage('room:talk', msg => appendChat(msg.player, msg.content));
+
+  room.onMessage('room:launch:start', () => {
+    const overlay = document.getElementById('countdown-overlay');
+    const num = document.getElementById('countdown-num');
+    overlay.classList.add('show');
+    let c = 3; num.textContent = c;
+    const t = setInterval(() => { c--; if (c > 0) num.textContent = c; else clearInterval(t); }, 1000);
+  });
+
+  room.onMessage('room:game:start', data => {
+    const devParam = devMode ? '&dev=MEDIATEST' : '';
+    window.location.href = '/play-mp2?room=' + encodeURIComponent(data.roomId) + devParam;
+  });
+
+  room.onMessage('room:error', ({ message }) => showError(message));
+
+  room.onLeave(() => {
+    if (gameLobbyRoom === room) {
+      gameLobbyRoom = null;
+      resetDetail();
+    }
+  });
+}
+
+// ── Detail panel ────────────────────────────────────────────────────────────
 function renderDetail(room) {
   document.getElementById('no-room-msg').style.display = 'none';
   document.getElementById('room-detail').classList.add('visible');
   document.getElementById('detail-title').textContent = room.name;
 
   const pl = document.getElementById('player-list');
-  pl.innerHTML = room.players.map(p => `
+  pl.innerHTML = (room.players || []).map(p => `
     <div class="player-row">
       <div class="player-dot" style="background:${p.color}"></div>
       <div class="player-name">${esc(p.name)}</div>
@@ -309,40 +391,29 @@ function renderDetail(room) {
     </div>
   `).join('');
 
-  const readyCount = room.players.filter(p => p.ready).length;
-  isMaster = room.master === socket.id;
+  const readyCount = (room.players || []).filter(p => p.ready).length;
+  isMaster = room.master === mySessionId;
   updateReadyBtn();
-  updateStartBtn(readyCount, room.players.length);
-
-  if (isMaster && currentRoomId) {
-    document.getElementById('share-link').value = location.origin + '/rooms?join=' + encodeURIComponent(currentRoomId);
-    document.getElementById('share-section').style.display = 'block';
-  } else {
-    document.getElementById('share-section').style.display = 'none';
-  }
+  updateStartBtn(readyCount, (room.players || []).length);
 }
 
 function resetDetail() {
-  currentRoomId = null; isMaster = false; isReady = false;
+  isMaster = false; isReady = false;
   document.getElementById('no-room-msg').style.display = 'block';
   document.getElementById('room-detail').classList.remove('visible');
   document.getElementById('leave-btn').style.display = 'none';
   document.getElementById('detail-title').textContent = 'Room';
   document.getElementById('chat-box').innerHTML = '';
   document.getElementById('share-section').style.display = 'none';
-  refreshRooms();
+  document.getElementById('room-error').textContent = '';
 }
 
 function updateReadyBtn() {
   const btn = document.getElementById('ready-btn');
   if (isReady) {
-    btn.textContent = '✓ Ready!';
-    btn.classList.add('active');
-    btn.disabled = true;
+    btn.textContent = '✓ Ready!'; btn.classList.add('active'); btn.disabled = true;
   } else {
-    btn.textContent = 'Ready Up';
-    btn.classList.remove('active');
-    btn.disabled = false;
+    btn.textContent = 'Ready Up'; btn.classList.remove('active'); btn.disabled = false;
   }
 }
 
@@ -350,36 +421,30 @@ function updateStartBtn(readyCount, playerCount) {
   const btn = document.getElementById('start-btn');
   btn.classList.toggle('visible', isMaster);
   if (isMaster) {
-    if (devMode) {
-      btn.disabled = false;
-    } else {
-      btn.disabled = (readyCount || 0) < 1 || (playerCount || 0) < 2;
-    }
+    btn.disabled = devMode ? false : ((readyCount || 0) < 1 || (playerCount || 0) < 2);
   }
 }
 
 function clickReady() {
-  if (isReady || !currentRoomId) return;
-  isReady = true;
-  updateReadyBtn();
-  socket.emit('room:ready');
+  if (isReady || !gameLobbyRoom) return;
+  isReady = true; updateReadyBtn();
+  gameLobbyRoom.send('room:ready');
 }
 
 function clickStart() {
-  if (!currentRoomId) return;
-  socket.emit('room:launch', devMode ? { dev: true } : {});
+  if (!gameLobbyRoom) return;
+  gameLobbyRoom.send('room:launch', devMode ? { dev: true } : {});
 }
 
+// ── Chat ─────────────────────────────────────────────────────────────────────
 function sendChat() {
   const input = document.getElementById('chat-input');
   const msg = input.value.trim();
-  if (!msg || !currentRoomId) return;
-  socket.emit('room:talk', { content: msg });
+  if (!msg || !gameLobbyRoom) return;
+  gameLobbyRoom.send('room:talk', { content: msg });
   input.value = '';
 }
-
 function chatKeydown(e) { if (e.key === 'Enter') sendChat(); }
-
 function appendChat(author, content) {
   const box = document.getElementById('chat-box');
   const el = document.createElement('div');
@@ -389,7 +454,11 @@ function appendChat(author, content) {
   box.scrollTop = box.scrollHeight;
 }
 
-function openCreateModal() { document.getElementById('create-modal').classList.add('open'); setTimeout(() => document.getElementById('c-name').focus(), 100); }
+// ── Modals ───────────────────────────────────────────────────────────────────
+function openCreateModal() {
+  document.getElementById('create-modal').classList.add('open');
+  setTimeout(() => document.getElementById('c-name').focus(), 100);
+}
 function openJoinModal()   { document.getElementById('join-modal').classList.add('open'); }
 function closeModals() {
   document.getElementById('create-modal').classList.remove('open');
@@ -405,8 +474,19 @@ function copyLink() {
   setTimeout(() => btn.textContent = 'COPY', 2000);
 }
 
+function showError(msg) {
+  document.getElementById('room-error').textContent = msg;
+  setTimeout(() => document.getElementById('room-error').textContent = '', 4000);
+}
+
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Auto-join from share link ─────────────────────────────────────────────
+const autoJoin = new URLSearchParams(location.search).get('join');
+if (autoJoin) {
+  joinRoom(autoJoin);
 }
 </script>
 </body>
