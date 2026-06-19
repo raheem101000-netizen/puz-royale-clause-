@@ -1,13 +1,17 @@
-import { defineServer, defineRoom, monitor } from "colyseus";
+import { defineServer, defineRoom, monitor, LobbyRoom } from "colyseus";
 import express from "express";
 import path from "path";
-import { PuzLobbyRoom } from "./rooms/PuzLobbyRoom";
+import { PuzGameLobby } from "./rooms/PuzGameLobby";
 import { PuzRoom } from "./rooms/PuzRoom";
 
 export const server = defineServer({
     rooms: {
-        puz_lobby: defineRoom(PuzLobbyRoom),
-        puz_room:  defineRoom(PuzRoom),
+        // Built-in LobbyRoom: auto-broadcasts room list changes to all watching clients.
+        lobby:          defineRoom(LobbyRoom),
+        // PuzGameLobby: one instance per game lobby; enableRealtimeListing() makes the
+        // built-in LobbyRoom push +/- events whenever a room is created/updated/removed.
+        puz_game_lobby: defineRoom(PuzGameLobby).enableRealtimeListing(),
+        puz_room:       defineRoom(PuzRoom),
     },
 
     express: (app) => {
