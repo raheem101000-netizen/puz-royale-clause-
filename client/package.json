@@ -1,0 +1,16 @@
+{
+  "name": "puz-royale-client",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "vite --mode dev",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@colyseus/sdk": "^0.17.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.10"
+  }
+}
