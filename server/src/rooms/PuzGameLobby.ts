@@ -54,7 +54,8 @@ export class PuzGameLobby extends Room {
         return;
       }
       try {
-        const gameRoom = await matchMaker.createRoom("puz_room", {});
+        const mapSize = Math.min(16, Math.max(2, parseInt(data?.mapSize) || 8));
+        const gameRoom = await matchMaker.createRoom("puz_room", { mapSize });
         this.broadcast('room:launch:start', {});
         setTimeout(() => {
           this.broadcast('room:game:start', { roomId: gameRoom.roomId });

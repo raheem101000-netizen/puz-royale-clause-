@@ -116,6 +116,11 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
           <input class="chat-input" id="chat-input" placeholder="Say something..." maxlength="120" onkeydown="chatKeydown(event)">
           <button class="btn btn-ghost btn-sm" onclick="sendChat()">Send</button>
         </div>
+        <div id="map-size-row" style="display:none;padding:0 18px 10px;">
+          <label style="display:block;font-size:10px;color:rgba(255,255,255,0.35);letter-spacing:1px;margin-bottom:6px;">MAP SIZE</label>
+          <select id="map-size-sel" style="background:#1a1a1a;color:#fff;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:6px 10px;font-size:12px;font-family:'Space Grotesk',sans-serif;width:100%;outline:none;cursor:pointer;">
+          </select>
+        </div>
         <div class="action-bar">
           <button class="btn-ready" id="ready-btn" onclick="clickReady()">Ready Up</button>
           <button class="btn-start" id="start-btn" onclick="clickStart()">▶ Start</button>
@@ -169,6 +174,20 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
 <script>
 const devMode = new URLSearchParams(window.location.search).get('dev') === 'MEDIATEST';
 const COLORS = ['#4CFF6C','#FF4444','#FFD700','#4BA8FF','#FF8C00','#DA70D6','#00CED1','#FF69B4'];
+const MAP_LABELS = {
+  2:'2p — 600×400',3:'3p — 700×500',4:'4p — 800×500',
+  5:'5p — 900×600',6:'6p — 1100×700',7:'7p — 1200×800',8:'8p — 1300×800',
+  9:'9p — 1400×900',10:'10p — 1600×1000',11:'11p — 1700×1000',12:'12p — 1800×1100',
+  13:'13p — 1800×1100',14:'14p — 1900×1200',15:'15p — 2000×1200',16:'16p — 2000×1300'
+};
+(function(){
+  const sel = document.getElementById('map-size-sel');
+  for(let p=2;p<=16;p++){
+    const o=document.createElement('option');
+    o.value=p; o.textContent=MAP_LABELS[p]; if(p===8) o.selected=true;
+    sel.appendChild(o);
+  }
+})();
 let myName = localStorage.getItem('puz_name') || ('Player' + Math.floor(Math.random() * 1000));
 let myColor = COLORS[Math.floor(Math.random() * COLORS.length)];
 let isMaster = false;
@@ -420,6 +439,7 @@ function updateReadyBtn() {
 function updateStartBtn(readyCount, playerCount) {
   const btn = document.getElementById('start-btn');
   btn.classList.toggle('visible', isMaster);
+  document.getElementById('map-size-row').style.display = isMaster ? 'block' : 'none';
   if (isMaster) {
     btn.disabled = devMode ? false : ((readyCount || 0) < 1 || (playerCount || 0) < 2);
   }
@@ -433,7 +453,8 @@ function clickReady() {
 
 function clickStart() {
   if (!gameLobbyRoom) return;
-  gameLobbyRoom.send('room:launch', devMode ? { dev: true } : {});
+  const mapSize = parseInt(document.getElementById('map-size-sel').value) || 8;
+  gameLobbyRoom.send('room:launch', devMode ? { dev: true, mapSize } : { mapSize });
 }
 
 // ── Chat ─────────────────────────────────────────────────────────────────────

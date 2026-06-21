@@ -1,15 +1,34 @@
 import { Room, Client } from "@colyseus/core";
 
-const W = 720, H = 480;
-const TILE = 30;
-const PLAYER_R = 8;
-const BULLET_R = 3;
-const BULLET_SPEED = 7;
-const PLAYER_SPEED = 2.4;
-const MAX_HP = 100;
+// ── Map configs verbatim from puz-maptest.html ────────────────────────────
+const SIZES: Record<number, [number, number, number]> = {
+  2:[600,400,28],   3:[700,500,28],   4:[800,500,30],
+  5:[900,600,30],   6:[1100,700,32],  7:[1200,800,34],  8:[1300,800,34],
+  9:[1400,900,36],  10:[1600,1000,38],11:[1700,1000,38],12:[1800,1100,40],
+  13:[1800,1100,40],14:[1900,1200,42],15:[2000,1200,42],16:[2000,1300,44]
+};
+
+interface ZonePhase { wait: number; shrinkTo: number; shrinkTime: number; }
+
+function phasesFor(p: number): number {
+  if(p<=4) return 3; if(p<=7) return 4; if(p<=10) return 5;
+  if(p<=14) return 6; if(p<=17) return 7; return 8;
+}
+
+function mkZones(phases: number, diag: number): ZonePhase[] {
+  const z: ZonePhase[] = [];
+  const startR = diag/2 + 100;
+  for(let i=0; i<phases; i++){
+    const frac = 1 - (i+1)/(phases+0.4);
+    const wait = Math.round(90 - i*9);
+    const shrinkTime = Math.round(40 - i*3);
+    z.push({wait:Math.max(18,wait), shrinkTo:Math.round(startR*Math.max(0.06,frac)), shrinkTime:Math.max(14,shrinkTime)});
+  }
+  return z;
+}
 
 interface Wall { x: number; y: number; w: number; h: number; }
-interface Input { up: boolean; down: boolean; left: boolean; right: boolean; angle: number; shooting: boolean; }
+interface Input { up: boolean; down: boolean; left: boolean; right: boolean; angle: number; shooting: boolean; reload: boolean; }
 interface Player {
   id: string; name: string; color: string;
   x: number; y: number; hp: number; maxHp: number;
@@ -22,69 +41,108 @@ interface Bullet {
   ownerId: string; color: string; r: number; life: number;
 }
 
-function generateWalls(): Wall[] {
+const PLAYER_R = 10;
+const BULLET_R = 4;
+const BULLET_SPEED = 9;
+const PLAYER_SPEED = 2.8;
+const MAX_HP = 100;
+
+function generateWalls(WW: number, WH: number, playerCount: number): Wall[] {
   const w: Wall[] = [];
-  const patterns = [
-    {x:4,y:3,w:3,h:1},{x:12,y:3,w:3,h:1},{x:20,y:3,w:3,h:1},
-    {x:4,y:18,w:3,h:1},{x:12,y:18,w:3,h:1},{x:20,y:18,w:3,h:1},
-    {x:2,y:8,w:1,h:4},{x:8,y:8,w:1,h:4},{x:15,y:8,w:1,h:4},{x:22,y:8,w:1,h:4},
-    {x:2,y:13,w:1,h:4},{x:8,y:13,w:1,h:4},{x:15,y:13,w:1,h:4},{x:22,y:13,w:1,h:4},
-    {x:5,y:10,w:4,h:2},{x:13,y:10,w:4,h:2},{x:19,y:6,w:2,h:2},{x:10,y:6,w:2,h:2},
-    {x:10,y:15,w:2,h:2},{x:19,y:15,w:2,h:2},{x:6,y:5,w:2,h:1},{x:17,y:5,w:2,h:1},
+  const blockW = Math.max(40, WW*0.04);
+  const blockH = Math.max(30, WH*0.05);
+  const positions: Array<{x:number;y:number;lx?:boolean;tall?:boolean}> = [
+    {x:0.12,y:0.12},{x:0.30,y:0.10},{x:0.50,y:0.11},{x:0.70,y:0.10},{x:0.88,y:0.12},
+    {x:0.20,y:0.28},{x:0.42,y:0.25},{x:0.58,y:0.25},{x:0.80,y:0.28},
+    {x:0.35,y:0.45},{x:0.50,y:0.42},{x:0.65,y:0.45},{x:0.50,y:0.55},
+    {x:0.20,y:0.65},{x:0.42,y:0.68},{x:0.58,y:0.68},{x:0.80,y:0.65},
+    {x:0.12,y:0.82},{x:0.30,y:0.84},{x:0.50,y:0.83},{x:0.70,y:0.84},{x:0.88,y:0.82},
+    {x:0.25,y:0.38,lx:true},{x:0.75,y:0.38,lx:true},
+    {x:0.25,y:0.58,lx:true},{x:0.75,y:0.58,lx:true},
+    {x:0.38,y:0.35,tall:true},{x:0.62,y:0.35,tall:true},
+    {x:0.38,y:0.58,tall:true},{x:0.62,y:0.58,tall:true},
   ];
-  patterns.forEach(p => {
-    for (let dx = 0; dx < p.w; dx++)
-      for (let dy = 0; dy < p.h; dy++)
-        w.push({ x: (p.x + dx) * TILE, y: (p.y + dy) * TILE, w: TILE, h: TILE });
+  const density = Math.min(1, 0.55 + playerCount/40);
+  const count = Math.floor(positions.length * density);
+  positions.slice(0, count).forEach(p => {
+    const x = Math.round(p.x * WW);
+    const y = Math.round(p.y * WH);
+    if(p.tall){
+      w.push({x,y,w:Math.max(15,WW*0.008),h:Math.max(80,WH*0.12)});
+    } else if(p.lx){
+      w.push({x,y,w:blockW,h:Math.max(12,WH*0.015)});
+      w.push({x,y,w:Math.max(12,WW*0.008),h:blockH});
+    } else {
+      const bw = blockW * (0.7 + Math.random()*0.6);
+      const bh = blockH * (0.7 + Math.random()*0.6);
+      w.push({x:x-bw/2,y:y-bh/2,w:bw,h:bh});
+    }
   });
   return w;
 }
 
 function isWall(x: number, y: number, r: number, walls: Wall[]): boolean {
-  return walls.some(w => x + r > w.x && x - r < w.x + w.w && y + r > w.y && y - r < w.y + w.h);
+  return walls.some(w => x+r>w.x && x-r<w.x+w.w && y+r>w.y && y-r<w.y+w.h);
 }
 
-function isInZone(x: number, y: number, zoneSize: number): boolean {
-  return x >= zoneSize && x <= W - zoneSize && y >= zoneSize && y <= H - zoneSize;
+function isInZone(x: number, y: number, zoneX: number, zoneY: number, zoneR: number): boolean {
+  return Math.hypot(x-zoneX, y-zoneY) <= zoneR;
 }
 
-function spawnPos(walls: Wall[]): { x: number; y: number } {
+function spawnPos(WW: number, WH: number, zoneX: number, zoneY: number, zoneR: number, walls: Wall[]): {x:number;y:number} {
   let x = 0, y = 0, tries = 0;
   do {
-    x = 40 + Math.random() * (W - 80);
-    y = 40 + Math.random() * (H - 80);
+    x = 100 + Math.random()*(WW-200);
+    y = 100 + Math.random()*(WH-200);
     tries++;
-  } while (isWall(x, y, 12, walls) && tries < 100);
-  return { x, y };
+  } while((isWall(x,y,12,walls) || !isInZone(x,y,zoneX,zoneY,zoneR)) && tries<200);
+  return {x, y};
 }
 
-function moveEntity(e: Player, dx: number, dy: number, walls: Wall[]) {
+function moveEntity(e: Player, dx: number, dy: number, WW: number, WH: number, walls: Wall[]) {
   const nx = e.x + dx * e.speed;
   const ny = e.y + dy * e.speed;
-  if (nx - e.r >= 0 && nx + e.r <= W && !isWall(nx, e.y, e.r - 1, walls)) e.x = nx;
-  if (ny - e.r >= 0 && ny + e.r <= H && !isWall(e.x, ny, e.r - 1, walls)) e.y = ny;
+  if(nx-e.r>=0 && nx+e.r<=WW && !isWall(nx, e.y, e.r-1, walls)) e.x = nx;
+  if(ny-e.r>=0 && ny+e.r<=WH && !isWall(e.x, ny, e.r-1, walls)) e.y = ny;
 }
 
 export class PuzRoom extends Room {
-  maxClients = 8;
+  maxClients = 16;
 
+  private WW = 1300; private WH = 800; private TILE = 34;
   private walls: Wall[] = [];
   private players: Record<string, Player> = {};
   private bullets: Bullet[] = [];
-  private zoneSize = 0;
-  private zoneTimer = 30;
   private aliveCount = 0;
   private placement = 0;
   private active = false;
   private loop: ReturnType<typeof setInterval> | null = null;
   private zoneInterval: ReturnType<typeof setInterval> | null = null;
 
-  onCreate() {
-    this.walls = generateWalls();
+  // Zone state (circular, verbatim from test file)
+  private zoneX = 0; private zoneY = 0; private zoneR = 0;
+  private targetZoneR = 0;
+  private zonePhases: ZonePhase[] = [];
+  private zonePhaseIdx = 0;
+  private zoneTimer = 0;
+  private shrinking = false;
 
-    this.onMessage("puz:join", (client: Client, data: { name?: string; color?: string }) => {
+  async onCreate(options: any) {
+    const playerCount = Math.min(16, Math.max(2, parseInt(options?.mapSize) || 8));
+    const cfg = SIZES[playerCount] || SIZES[8];
+    this.WW = cfg[0]; this.WH = cfg[1]; this.TILE = cfg[2];
+    this.maxClients = playerCount;
+
+    const diag = Math.sqrt(this.WW*this.WW + this.WH*this.WH);
+    this.zoneX = this.WW/2; this.zoneY = this.WH/2;
+    this.zoneR = diag/2 + 100;
+    this.targetZoneR = this.zoneR;
+    this.zonePhases = mkZones(phasesFor(playerCount), diag);
+    this.walls = generateWalls(this.WW, this.WH, playerCount);
+
+    this.onMessage("puz:join", (client: Client, data: {name?:string;color?:string}) => {
       if (this.players[client.sessionId]) return;
-      const pos = spawnPos(this.walls);
+      const pos = spawnPos(this.WW, this.WH, this.zoneX, this.zoneY, this.zoneR, this.walls);
       this.players[client.sessionId] = {
         id: client.sessionId,
         name: data.name || 'Player',
@@ -96,14 +154,22 @@ export class PuzRoom extends Room {
         ammo: 30, maxAmmo: 30,
         reloading: false, reloadTimer: 0,
         shootCooldown: 0,
-        input: { up: false, down: false, left: false, right: false, angle: 0, shooting: false }
+        input: {up:false,down:false,left:false,right:false,angle:0,shooting:false,reload:false}
       };
       this.aliveCount++;
+
+      // If game is already running, send map info directly to the late joiner
+      if (this.active) {
+        client.send('puz:started', {
+          walls: this.walls, WW: this.WW, WH: this.WH, TILE: this.TILE,
+          zoneX: this.zoneX, zoneY: this.zoneY, zoneR: this.zoneR
+        });
+      }
 
       const allPlayers = Object.values(this.players);
       const hostId = allPlayers[0]?.id || client.sessionId;
       this.broadcast('puz:lobby', {
-        players: allPlayers.map(p => ({ id: p.id, name: p.name, color: p.color })),
+        players: allPlayers.map(p => ({id:p.id,name:p.name,color:p.color})),
         hostId
       });
     });
@@ -113,14 +179,14 @@ export class PuzRoom extends Room {
       this.startGame();
     });
 
-    this.onMessage("puz:input", (client: Client, data: { input: Input }) => {
+    this.onMessage("puz:input", (client: Client, data: {input:Input}) => {
       const p = this.players[client.sessionId];
       if (!p || !p.alive) return;
       if (data.input) p.input = data.input;
     });
   }
 
-  onLeave(client: Client) {
+  onLeave(client: Client, _code?: number) {
     const p = this.players[client.sessionId];
     if (p && p.alive) {
       p.alive = false;
@@ -132,15 +198,49 @@ export class PuzRoom extends Room {
 
   private startGame() {
     this.active = true;
-    this.broadcast('puz:started', { walls: this.walls });
+    this.broadcast('puz:started', {
+      walls: this.walls, WW: this.WW, WH: this.WH, TILE: this.TILE,
+      zoneX: this.zoneX, zoneY: this.zoneY, zoneR: this.zoneR
+    });
+    this.startZone();
+    this.loop = setInterval(() => this.puzTick(), 16);
+  }
+
+  private startZone() {
+    this.zonePhaseIdx = 0; this.shrinking = false;
+    this.zoneTimer = this.zonePhases[0]?.wait ?? 90;
+    this.broadcast('puz:zone', {
+      zoneX: this.zoneX, zoneY: this.zoneY, zoneR: this.zoneR,
+      timer: this.zoneTimer, shrinking: false
+    });
 
     this.zoneInterval = setInterval(() => {
       this.zoneTimer--;
-      if (this.zoneTimer <= 0) { this.zoneSize += 18; this.zoneTimer = 12; }
-      this.broadcast('puz:zone', { zoneSize: this.zoneSize, timer: Math.max(0, this.zoneTimer) });
+      if (!this.shrinking) {
+        if (this.zoneTimer <= 0 && this.zonePhaseIdx < this.zonePhases.length) {
+          const phase = this.zonePhases[this.zonePhaseIdx];
+          this.targetZoneR = phase.shrinkTo;
+          this.shrinking = true;
+          this.zoneTimer = phase.shrinkTime;
+          this.zonePhaseIdx++;
+        }
+      } else {
+        const totalShrink = this.zoneR - this.targetZoneR;
+        const shrinkPerSecond = totalShrink / Math.max(1, this.zoneTimer);
+        this.zoneR = Math.max(this.targetZoneR, this.zoneR - shrinkPerSecond);
+        if (this.zoneTimer <= 0 || this.zoneR <= this.targetZoneR) {
+          this.zoneR = this.targetZoneR;
+          this.shrinking = false;
+          this.zoneTimer = this.zonePhaseIdx < this.zonePhases.length
+            ? this.zonePhases[this.zonePhaseIdx].wait
+            : 999;
+        }
+      }
+      this.broadcast('puz:zone', {
+        zoneX: this.zoneX, zoneY: this.zoneY, zoneR: this.zoneR,
+        timer: Math.max(0, this.zoneTimer), shrinking: this.shrinking
+      });
     }, 1000);
-
-    this.loop = setInterval(() => this.puzTick(), 16);
   }
 
   private stopGame() {
@@ -155,15 +255,15 @@ export class PuzRoom extends Room {
     const dx = tx - shooter.x, dy = ty - shooter.y;
     const dist = Math.hypot(dx, dy);
     if (dist === 0) return;
-    const spread = (Math.random() - 0.5) * 0.06;
+    const spread = (Math.random() - 0.5) * 0.08;
     this.bullets.push({
       x: shooter.x, y: shooter.y,
-      vx: (dx / dist) * BULLET_SPEED + Math.cos(spread),
-      vy: (dy / dist) * BULLET_SPEED + Math.sin(spread),
-      ownerId: shooter.id, color: shooter.color, r: BULLET_R, life: 80
+      vx: (dx/dist)*BULLET_SPEED + Math.cos(spread),
+      vy: (dy/dist)*BULLET_SPEED + Math.sin(spread),
+      ownerId: shooter.id, color: shooter.color, r: BULLET_R, life: 120
     });
     shooter.ammo--;
-    shooter.shootCooldown = 12;
+    shooter.shootCooldown = 14;
   }
 
   private kill(entity: Player) {
@@ -171,20 +271,18 @@ export class PuzRoom extends Room {
     entity.alive = false;
     this.aliveCount = Math.max(0, this.aliveCount - 1);
     this.placement++;
-    this.broadcast('puz:kill', { name: entity.name, color: entity.color, place: this.placement });
+    this.broadcast('puz:kill', {name:entity.name, color:entity.color, place:this.placement});
     this.checkWinCondition();
   }
 
   private checkWinCondition() {
     const alive = Object.values(this.players).filter(p => p.alive);
-    if (alive.length === 1) {
+    if (alive.length <= 1) {
       this.broadcast('puz:end', {
-        winnerId: alive[0].id,
-        winnerName: alive[0].name,
+        winnerId: alive[0]?.id || null,
+        winnerName: alive[0]?.name || null,
         total: Object.keys(this.players).length + this.placement
       });
-      this.stopGame();
-    } else if (alive.length === 0) {
       this.stopGame();
     }
   }
@@ -207,28 +305,30 @@ export class PuzRoom extends Room {
       if (p.input.left)  dx = -1;
       if (p.input.right) dx =  1;
       if (dx && dy) { dx *= 0.707; dy *= 0.707; }
-      moveEntity(p, dx, dy, this.walls);
+      moveEntity(p, dx, dy, this.WW, this.WH, this.walls);
       p.angle = p.input.angle || 0;
 
       if (p.input.shooting && !p.reloading && p.shootCooldown <= 0) {
-        this.shoot(p, p.x + Math.cos(p.angle) * 100, p.y + Math.sin(p.angle) * 100);
+        this.shoot(p, p.x + Math.cos(p.angle)*200, p.y + Math.sin(p.angle)*200);
       }
-      if (p.ammo === 0 && !p.reloading) { p.reloading = true; p.reloadTimer = 90; }
+      if ((p.input.reload || p.ammo === 0) && !p.reloading && p.ammo < p.maxAmmo) {
+        p.reloading = true; p.reloadTimer = 90;
+      }
 
-      if (!isInZone(p.x, p.y, this.zoneSize)) {
-        p.hp -= 0.4;
+      if (!isInZone(p.x, p.y, this.zoneX, this.zoneY, this.zoneR)) {
+        p.hp -= 0.3;
         if (p.hp <= 0) this.kill(p);
       }
     }
 
     this.bullets = this.bullets.filter(b => {
       b.x += b.vx; b.y += b.vy; b.life--;
-      if (b.life <= 0 || b.x < 0 || b.x > W || b.y < 0 || b.y > H) return false;
+      if (b.life<=0 || b.x<0 || b.x>this.WW || b.y<0 || b.y>this.WH) return false;
       if (isWall(b.x, b.y, 2, this.walls)) return false;
       for (const t of players) {
         if (!t.alive || t.id === b.ownerId) continue;
-        if (Math.hypot(b.x - t.x, b.y - t.y) < t.r + b.r) {
-          t.hp -= 25;
+        if (Math.hypot(b.x-t.x, b.y-t.y) < t.r+b.r) {
+          t.hp -= 22;
           if (t.hp <= 0) this.kill(t);
           return false;
         }
@@ -238,20 +338,18 @@ export class PuzRoom extends Room {
 
     this.broadcast('puz:state', {
       players: players.map(p => ({
-        id: p.id, x: p.x, y: p.y,
-        hp: p.hp, maxHp: p.maxHp,
-        angle: p.angle, alive: p.alive,
-        color: p.color, name: p.name,
-        ammo: p.ammo, maxAmmo: p.maxAmmo,
-        reloading: p.reloading
+        id:p.id, x:p.x, y:p.y,
+        hp:p.hp, maxHp:p.maxHp,
+        angle:p.angle, alive:p.alive,
+        color:p.color, name:p.name,
+        ammo:p.ammo, maxAmmo:p.maxAmmo,
+        reloading:p.reloading, r:p.r
       })),
-      bullets: this.bullets.map(b => ({ x: b.x, y: b.y, color: b.color })),
-      zoneSize: this.zoneSize,
+      bullets: this.bullets.map(b => ({x:b.x, y:b.y, vx:b.vx, vy:b.vy, color:b.color})),
+      zoneX: this.zoneX, zoneY: this.zoneY, zoneR: this.zoneR,
       aliveCount: this.aliveCount
     });
   }
 
-  onDispose() {
-    this.stopGame();
-  }
+  onDispose() { this.stopGame(); }
 }
