@@ -85,6 +85,8 @@ let serverPlayers = [];
 let serverBullets = [];
 let renderPlayers = {};
 let aliveCount = 0;
+let inputSeq = 0;
+let pendingInputs = [];
 
 const urlP = new URLSearchParams(location.search);
 const roomId = urlP.get('room') || '';
@@ -273,7 +275,9 @@ function maybeSendInput() {
   const key = JSON.stringify(input);
   if (key === lastInputSent) return;
   lastInputSent = key;
-  socket.emit('puz:input', { roomId, input });
+  inputSeq++;
+  pendingInputs.push({ seq: inputSeq, input });
+  socket.emit('puz:input', { roomId, input, seq: inputSeq });
 }
 
 function draw() {
@@ -366,6 +370,12 @@ socket.on('puz:state', state => {
   Object.keys(renderPlayers).forEach(id => {
     if (!incoming.find(p => p.id===id)) delete renderPlayers[id];
   });
+  // Trim confirmed inputs using the server's echo of our last processed seq.
+  const myState = incoming.find(p => p.id === myId);
+  if (myState && typeof myState.lastSeq === 'number') {
+    pendingInputs = pendingInputs.filter(pi => pi.seq > myState.lastSeq);
+    console.log('seq confirmed:', myState.lastSeq, 'pending:', pendingInputs.length);
+  }
 });
 
 socket.on('puz:zone', ({ zoneX: zx, zoneY: zy, zoneR: zr, timer, shrinking }) => {
