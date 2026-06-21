@@ -256,7 +256,28 @@ function drawMinimap() {
   mctx.strokeStyle='rgba(255,255,255,0.35)'; mctx.lineWidth=2; mctx.stroke();
 }
 
+let lastInputSent = '';
+function maybeSendInput() {
+  if (!gameStarted) return;
+  const p = me();
+  if (!p || !p.alive) return;
+  const worldMouseX = mouseX + camX, worldMouseY = mouseY + camY;
+  const angle = Math.atan2(worldMouseY - p.y, worldMouseX - p.x);
+  const input = {
+    up:    !!(keys['ArrowUp']    || keys['KeyW']),
+    down:  !!(keys['ArrowDown']  || keys['KeyS']),
+    left:  !!(keys['ArrowLeft']  || keys['KeyA']),
+    right: !!(keys['ArrowRight'] || keys['KeyD']),
+    angle, shooting: mouseDown, reload: !!(keys['KeyR'])
+  };
+  const key = JSON.stringify(input);
+  if (key === lastInputSent) return;
+  lastInputSent = key;
+  socket.emit('puz:input', { roomId, input });
+}
+
 function draw() {
+  maybeSendInput();
   updateCamera();
   drawWorld();
   drawPlayers();
@@ -359,27 +380,6 @@ socket.on('puz:end', ({ winnerId, total }) => {
   showResult(winnerId===myId ? 1 : 2, total);
 });
 
-// ── Input loop (50ms) ──────────────────────────────────────────────────────
-setInterval(() => {
-  if (!gameStarted) return;
-  const p = me();
-  if (!p || !p.alive) return;
-  const worldMouseX = mouseX + camX;
-  const worldMouseY = mouseY + camY;
-  const angle = Math.atan2(worldMouseY - p.y, worldMouseX - p.x);
-  socket.emit('puz:input', {
-    roomId,
-    input: {
-      up:    !!(keys['ArrowUp']    || keys['KeyW']),
-      down:  !!(keys['ArrowDown']  || keys['KeyS']),
-      left:  !!(keys['ArrowLeft']  || keys['KeyA']),
-      right: !!(keys['ArrowRight'] || keys['KeyD']),
-      angle,
-      shooting: mouseDown,
-      reload:   !!(keys['KeyR'])
-    }
-  });
-}, 50);
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
