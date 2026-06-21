@@ -9,7 +9,7 @@ interface PlayerData {
 }
 
 export class PuzGameLobby extends Room {
-  maxClients = 8;
+  maxClients = 16;
 
   private lobbyPlayers: Record<string, PlayerData> = {};
   private lobbyName: string = '';
@@ -21,15 +21,12 @@ export class PuzGameLobby extends Room {
     this.lobbyOpen = options.open !== false;
     this.lobbyPassword = options.password || null;
 
-    // Private rooms (password-protected) are hidden from the built-in LobbyRoom list.
-    // Users join them via "Join with Code" + room ID.
     if (this.lobbyPassword) {
       await this.setPrivate(true);
     }
 
     await this.setMetadata({ name: this.lobbyName, open: this.lobbyOpen, players: 0 });
 
-    // Client sends this after registering handlers to get the initial room state (avoids race).
     this.onMessage("room:getState", (client: Client) => {
       const p = this.lobbyPlayers[client.sessionId];
       if (!p) return;
@@ -56,12 +53,21 @@ export class PuzGameLobby extends Room {
       try {
         const mapSize = Math.min(16, Math.max(2, parseInt(data?.mapSize) || 8));
         const gameRoom = await matchMaker.createRoom("puz_room", { mapSize });
-        // Hide from lobby listing immediately — prevents ghost room appearing while
-        // clients disconnect from this lobby and navigate to the game.
+        // Remove from lobby listing immediately (belt+suspenders: both setPrivate
+        // and metadata open:false, since setPrivate alone may not update existing
+        // LobbyRoom connections in all Colyseus 0.17 builds).
         await this.setPrivate(true);
+        await this.setMetadata({ name: this.lobbyName, open: false, players: Object.keys(this.lobbyPlayers).length });
         this.broadcast('room:launch:start', {});
         setTimeout(() => {
           this.broadcast('room:game:start', { roomId: gameRoom.roomId });
+          // Force-disconnect remaining clients after a brief delivery window.
+          // WebSocket sends queued messages (including room:game:start) before
+          // the close frame, so clients will receive the roomId before disconnect.
+          // This guarantees autoDispose fires even if a client never navigates away.
+          setTimeout(() => {
+            this.clients.forEach(c => c.leave(1000));
+          }, 300);
         }, 3000);
       } catch (e) {
         client.send('room:error', { message: 'Failed to start game' });
@@ -82,7 +88,6 @@ export class PuzGameLobby extends Room {
   }
 
   async onJoin(client: Client, options: any) {
-    // Password check — throw to reject join before player is added.
     if (this.lobbyPassword && options.password !== this.lobbyPassword) {
       throw new Error("Wrong password");
     }
@@ -97,14 +102,13 @@ export class PuzGameLobby extends Room {
     };
     this.lobbyPlayers[client.sessionId] = pd;
 
-    // Update metadata so built-in LobbyRoom broadcasts the player count change.
-    await this.setMetadata({ players: Object.keys(this.lobbyPlayers).length });
+    // Always include all three fields so a partial update never wipes name/open.
+    await this.setMetadata({ name: this.lobbyName, open: this.lobbyOpen, players: Object.keys(this.lobbyPlayers).length });
 
     if (!isMaster) {
       this.broadcast('room:player:join', { player: this.serializePlayer(pd) }, { except: client });
       this.broadcast('room:state', this.serializeRoom());
     }
-    // The joining client sends "room:getState" after registering handlers.
   }
 
   async onLeave(client: Client, _code?: number) {
@@ -112,11 +116,12 @@ export class PuzGameLobby extends Room {
     if (!p) return;
     delete this.lobbyPlayers[client.sessionId];
 
-    // Early-return BEFORE setMetadata when room is now empty — avoids advertising
-    // a 0-player entry that appears as a ghost in the lobby before autoDispose fires.
+    // Early-return before setMetadata when room is now empty — avoids a 0-player
+    // metadata update that would show as a ghost entry before autoDispose fires.
     if (Object.keys(this.lobbyPlayers).length === 0) return;
 
-    await this.setMetadata({ players: Object.keys(this.lobbyPlayers).length });
+    // Always include all fields so name/open are never wiped by a partial update.
+    await this.setMetadata({ name: this.lobbyName, open: this.lobbyOpen, players: Object.keys(this.lobbyPlayers).length });
 
     this.broadcast('room:player:leave', { player: client.sessionId });
 

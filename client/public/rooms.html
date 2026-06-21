@@ -380,8 +380,12 @@ function setupGameLobbyHandlers() {
   });
 
   room.onMessage('room:game:start', data => {
-    const devParam = devMode ? '&dev=MEDIATEST' : '';
-    window.location.href = '/play-mp2?room=' + encodeURIComponent(data.roomId) + devParam;
+    const url = '/play-mp2?room=' + encodeURIComponent(data.roomId) + (devMode ? '&dev=MEDIATEST' : '');
+    // Explicitly leave before navigating so onLeave fires cleanly on the server.
+    // This ensures the lobby room's client count hits 0 and autoDispose fires.
+    gameLobbyRoom = null; // prevent onLeave handler from calling resetDetail
+    room.leave();
+    window.location.href = url;
   });
 
   room.onMessage('room:error', ({ message }) => showError(message));
