@@ -289,8 +289,10 @@ function drawMinimap() {
   mctx.strokeStyle='rgba(255,255,255,0.35)'; mctx.lineWidth=2; mctx.stroke();
 }
 
-let lastInputSent = '';
-function maybeSendInput() {
+// Send input + advance prediction every 16ms — matches server tick rate exactly.
+// No change-based dedupe here: prediction must step every tick while a key is held,
+// just like the server moves every tick regardless of whether input changed.
+function tickInput() {
   if (!gameStarted) return;
   const p = me();
   if (!p || !p.alive) return;
@@ -304,19 +306,15 @@ function maybeSendInput() {
     right: !!(keys['ArrowRight'] || keys['KeyD']),
     angle, shooting: mouseDown, reload: !!(keys['KeyR'])
   };
-  const key = JSON.stringify(input);
-  if (key === lastInputSent) return;
-  lastInputSent = key;
+  if (!predicted) predicted = { x: p.x, y: p.y };
+  clientMove(predicted, input);
   inputSeq++;
   pendingInputs.push({ seq: inputSeq, input });
   socket.emit('puz:input', { roomId, input, seq: inputSeq });
-  // Apply to predicted immediately — this is Stage 2 (instant local response)
-  if (!predicted) predicted = { x: p.x, y: p.y };
-  clientMove(predicted, input);
 }
+setInterval(tickInput, 16);
 
 function draw() {
-  maybeSendInput();
   updateCamera();
   drawWorld();
   drawPlayers();
