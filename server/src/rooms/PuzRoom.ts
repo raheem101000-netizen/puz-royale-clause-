@@ -34,7 +34,7 @@ interface Player {
   x: number; y: number; hp: number; maxHp: number;
   alive: boolean; connected: boolean; angle: number; speed: number; r: number;
   ammo: number; maxAmmo: number; reloading: boolean; reloadTimer: number;
-  shootCooldown: number; input: Input;
+  shootCooldown: number; input: Input; lastSeq: number;
 }
 interface Bullet {
   x: number; y: number; vx: number; vy: number;
@@ -175,7 +175,7 @@ export class PuzRoom extends Room {
         color: data.color || '#4CFF6C',
         x: pos.x, y: pos.y,
         hp: MAX_HP, maxHp: MAX_HP,
-        alive: true, connected: true, angle: 0,
+        alive: true, connected: true, angle: 0, lastSeq: 0,
         speed: PLAYER_SPEED, r: PLAYER_R,
         ammo: 30, maxAmmo: 30,
         reloading: false, reloadTimer: 0,
@@ -204,10 +204,11 @@ export class PuzRoom extends Room {
       this.startGame();
     });
 
-    this.onMessage("puz:input", (client: Client, data: {input:Input}) => {
+    this.onMessage("puz:input", (client: Client, data: {input:Input; seq?: number}) => {
       const p = this.players[client.sessionId];
       if (!p || !p.alive) return;
       if (data.input) p.input = data.input;
+      if (typeof data.seq === 'number') p.lastSeq = data.seq;
     });
   }
 
@@ -396,7 +397,7 @@ export class PuzRoom extends Room {
         angle:p.angle, alive:p.alive,
         color:p.color, name:p.name,
         ammo:p.ammo, maxAmmo:p.maxAmmo,
-        reloading:p.reloading, r:p.r
+        reloading:p.reloading, r:p.r, lastSeq:p.lastSeq
       })),
       bullets: this.bullets.map(b => ({x:b.x, y:b.y, vx:b.vx, vy:b.vy, color:b.color})),
       zoneX: this.zoneX, zoneY: this.zoneY, zoneR: this.zoneR,
