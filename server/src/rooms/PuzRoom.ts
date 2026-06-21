@@ -32,7 +32,7 @@ interface Input { up: boolean; down: boolean; left: boolean; right: boolean; ang
 interface Player {
   id: string; name: string; color: string;
   x: number; y: number; hp: number; maxHp: number;
-  alive: boolean; angle: number; speed: number; r: number;
+  alive: boolean; connected: boolean; angle: number; speed: number; r: number;
   ammo: number; maxAmmo: number; reloading: boolean; reloadTimer: number;
   shootCooldown: number; input: Input;
 }
@@ -116,6 +116,7 @@ export class PuzRoom extends Room {
   private aliveCount = 0;
   private placement = 0;
   private active = false;
+  private startedPlayerCount = 0;
   private loop: ReturnType<typeof setInterval> | null = null;
   private zoneInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -174,7 +175,7 @@ export class PuzRoom extends Room {
         color: data.color || '#4CFF6C',
         x: pos.x, y: pos.y,
         hp: MAX_HP, maxHp: MAX_HP,
-        alive: true, angle: 0,
+        alive: true, connected: true, angle: 0,
         speed: PLAYER_SPEED, r: PLAYER_R,
         ammo: 30, maxAmmo: 30,
         reloading: false, reloadTimer: 0,
@@ -210,17 +211,43 @@ export class PuzRoom extends Room {
     });
   }
 
-  onLeave(client: Client, _code?: number) {
+  async onLeave(client: Client, code?: number) {
     const p = this.players[client.sessionId];
-    if (p && p.alive) {
-      p.alive = false;
-      this.aliveCount = Math.max(0, this.aliveCount - 1);
-      delete this.players[client.sessionId];
-      this.checkWinCondition();
+    if (!p) return;
+
+    // code 1000 = normal closure (client called room.leave()) — remove immediately.
+    if (code === 1000) {
+      this.removePlayer(client.sessionId);
+      return;
+    }
+
+    // Unclean disconnect: may be a brief blip (WiFi stutter, tab blur, free-host
+    // latency spike). Hold the player slot for 20 s before treating them as gone.
+    // If they reconnect (Colyseus token or name-based dedup in puz:join) within
+    // the window, the game continues without interruption.
+    p.connected = false;
+    try {
+      await this.allowReconnection(client, 20);
+      p.connected = true;
+    } catch {
+      // Grace expired — truly gone.
+      this.removePlayer(client.sessionId);
     }
   }
 
+  private removePlayer(sessionId: string) {
+    const p = this.players[sessionId];
+    if (!p) return;
+    if (p.alive) {
+      p.alive = false;
+      this.aliveCount = Math.max(0, this.aliveCount - 1);
+    }
+    delete this.players[sessionId];
+    this.checkWinCondition();
+  }
+
   private startGame() {
+    this.startedPlayerCount = this.aliveCount;
     this.active = true;
     this.broadcast('puz:started', {
       walls: this.walls, WW: this.WW, WH: this.WH, TILE: this.TILE,
@@ -300,6 +327,8 @@ export class PuzRoom extends Room {
   }
 
   private checkWinCondition() {
+    if (!this.active) return;
+    if (this.startedPlayerCount < 2) return;
     const alive = Object.values(this.players).filter(p => p.alive);
     if (alive.length <= 1) {
       this.broadcast('puz:end', {
