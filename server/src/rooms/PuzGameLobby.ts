@@ -13,19 +13,17 @@ export class PuzGameLobby extends Room {
 
   private lobbyPlayers: Record<string, PlayerData> = {};
   private lobbyName: string = '';
-  private lobbyOpen: boolean = true;
+  private lobbyLocked: boolean = false;
   private lobbyPassword: string | null = null;
 
   async onCreate(options: any) {
     this.lobbyName = options.name || 'Room';
-    this.lobbyOpen = options.open !== false;
     this.lobbyPassword = options.password || null;
+    this.lobbyLocked = !!this.lobbyPassword;
 
-    if (this.lobbyPassword) {
-      await this.setPrivate(true);
-    }
-
-    await this.setMetadata({ name: this.lobbyName, open: this.lobbyOpen, players: 0 });
+    // Private rooms stay listed (open: true) so they appear in the lobby with a lock
+    // badge. We only set open: false when the game launches to remove the entry.
+    await this.setMetadata({ name: this.lobbyName, open: true, locked: this.lobbyLocked, players: 0 });
 
     this.onMessage("room:getState", (client: Client) => {
       const p = this.lobbyPlayers[client.sessionId];
@@ -57,7 +55,7 @@ export class PuzGameLobby extends Room {
         // and metadata open:false, since setPrivate alone may not update existing
         // LobbyRoom connections in all Colyseus 0.17 builds).
         await this.setPrivate(true);
-        await this.setMetadata({ name: this.lobbyName, open: false, players: Object.keys(this.lobbyPlayers).length });
+        await this.setMetadata({ name: this.lobbyName, open: false, locked: this.lobbyLocked, players: Object.keys(this.lobbyPlayers).length });
         this.broadcast('room:launch:start', {});
         setTimeout(() => {
           this.broadcast('room:game:start', { roomId: gameRoom.roomId });
@@ -102,8 +100,7 @@ export class PuzGameLobby extends Room {
     };
     this.lobbyPlayers[client.sessionId] = pd;
 
-    // Always include all three fields so a partial update never wipes name/open.
-    await this.setMetadata({ name: this.lobbyName, open: this.lobbyOpen, players: Object.keys(this.lobbyPlayers).length });
+    await this.setMetadata({ name: this.lobbyName, open: true, locked: this.lobbyLocked, players: Object.keys(this.lobbyPlayers).length });
 
     if (!isMaster) {
       this.broadcast('room:player:join', { player: this.serializePlayer(pd) }, { except: client });
@@ -120,8 +117,7 @@ export class PuzGameLobby extends Room {
     // metadata update that would show as a ghost entry before autoDispose fires.
     if (Object.keys(this.lobbyPlayers).length === 0) return;
 
-    // Always include all fields so name/open are never wiped by a partial update.
-    await this.setMetadata({ name: this.lobbyName, open: this.lobbyOpen, players: Object.keys(this.lobbyPlayers).length });
+    await this.setMetadata({ name: this.lobbyName, open: true, locked: this.lobbyLocked, players: Object.keys(this.lobbyPlayers).length });
 
     this.broadcast('room:player:leave', { player: client.sessionId });
 
@@ -142,7 +138,7 @@ export class PuzGameLobby extends Room {
     return {
       id: this.roomId,
       name: this.lobbyName,
-      open: this.lobbyOpen,
+      locked: this.lobbyLocked,
       master: players.find(p => p.master)?.id || '',
       players: players.map(this.serializePlayer.bind(this)),
     };

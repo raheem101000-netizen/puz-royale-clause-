@@ -87,7 +87,7 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
   <div class="layout">
     <div class="panel">
       <div class="panel-head">
-        <span class="panel-title">Public Rooms</span>
+        <span class="panel-title">Rooms</span>
         <span id="live-dot" style="font-size:10px;color:rgba(76,255,108,0.5);">● LIVE</span>
       </div>
       <div class="room-list" id="room-list">
@@ -153,8 +153,8 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
 <div class="modal-bg" id="join-modal">
   <div class="modal">
     <h3>JOIN PRIVATE ROOM</h3>
-    <div class="field"><label>ROOM ID</label><input id="j-id" placeholder="Paste room ID"></div>
-    <div class="field"><label>PASSWORD (if required)</label><input id="j-pass" placeholder="Leave blank if none"></div>
+    <div class="field" id="j-id-field"><label>ROOM ID</label><input id="j-id" placeholder="Paste room ID"></div>
+    <div class="field"><label>PASSWORD</label><input id="j-pass" type="password" placeholder="Enter password"></div>
     <div class="error-inline" id="j-error"></div>
     <div class="modal-btns">
       <button class="btn btn-red" style="flex:1;" onclick="joinPrivate()">Join</button>
@@ -197,6 +197,8 @@ let roomType = 'public';
 // Current in-room state
 let gameLobbyRoom = null;
 let mySessionId = null;
+let myRoomPassword = '';
+let pendingLockedRoomId = '';
 
 document.getElementById('my-name').value = myName;
 document.getElementById('my-name').addEventListener('change', e => {
@@ -266,15 +268,20 @@ function renderRoomList(rooms) {
     el.innerHTML = '<div class="empty-msg">No rooms yet. Create one!</div>';
     return;
   }
-  el.innerHTML = publicRooms.map(r => `
-    <div class="room-row">
-      <div>
-        <div class="room-name">${esc(r.metadata?.name || r.roomId)}</div>
-        <div class="room-meta">${r.clients || 0}/${r.maxClients || 8} players</div>
+  el.innerHTML = publicRooms.map(r => {
+    const locked = !!r.metadata.locked;
+    const joinFn = locked ? `joinLockedRoom('${r.roomId}')` : `joinRoom('${r.roomId}')`;
+    const badge = locked ? ' <span style="color:#FFB400;font-size:10px;letter-spacing:.5px;vertical-align:middle;">PRIVATE</span>' : '';
+    return `
+      <div class="room-row">
+        <div>
+          <div class="room-name">${esc(r.metadata?.name || r.roomId)}${badge}</div>
+          <div class="room-meta">${r.clients || 0}/${r.maxClients || 8} players</div>
+        </div>
+        <button class="btn btn-red btn-sm" onclick="${joinFn}">JOIN</button>
       </div>
-      <button class="btn btn-red btn-sm" onclick="joinRoom('${r.roomId}')">JOIN</button>
-    </div>
-  `).join('');
+    `;
+  }).join('');
 }
 
 // ── Room management ─────────────────────────────────────────────────────────
@@ -290,10 +297,11 @@ async function createRoom() {
   if (!name) { document.getElementById('c-error').textContent = 'Enter a room name'; return; }
   const isPrivate = roomType === 'private';
   const password = isPrivate ? document.getElementById('c-pass').value : null;
+  myRoomPassword = password || '';
   closeModals();
   try {
     gameLobbyRoom = await colyseusClient.create('puz_game_lobby', {
-      name, open: !isPrivate, password,
+      name, password,
       playerName: myName, color: myColor,
     });
     mySessionId = gameLobbyRoom.sessionId;
@@ -316,20 +324,31 @@ async function joinRoom(roomId) {
   }
 }
 
-async function joinPrivate() {
-  const id = document.getElementById('j-id').value.trim();
-  if (!id) { document.getElementById('j-error').textContent = 'Enter a room ID'; return; }
-  const password = document.getElementById('j-pass').value;
+function joinLockedRoom(roomId) {
   if (gameLobbyRoom) return;
+  pendingLockedRoomId = roomId;
+  document.getElementById('j-id-field').style.display = 'none';
+  document.getElementById('j-pass').value = '';
+  document.getElementById('j-error').textContent = '';
+  document.getElementById('join-modal').classList.add('open');
+  setTimeout(() => document.getElementById('j-pass').focus(), 100);
+}
+
+async function joinPrivate() {
+  if (gameLobbyRoom) return;
+  const password = document.getElementById('j-pass').value;
+  const id = pendingLockedRoomId || document.getElementById('j-id').value.trim();
+  if (!id) { document.getElementById('j-error').textContent = 'Enter a room ID'; return; }
   try {
     gameLobbyRoom = await colyseusClient.joinById(id, {
       playerName: myName, color: myColor, password,
     });
     mySessionId = gameLobbyRoom.sessionId;
+    myRoomPassword = password;
     closeModals();
     setupGameLobbyHandlers();
   } catch (e) {
-    document.getElementById('j-error').textContent = 'Join failed: ' + (e.message || 'wrong password or room not found');
+    document.getElementById('j-error').textContent = 'Wrong password or room not found';
   }
 }
 
@@ -350,7 +369,8 @@ function setupGameLobbyHandlers() {
     renderDetail(roomData);
     document.getElementById('leave-btn').style.display = 'block';
     if (isMaster) {
-      document.getElementById('share-link').value = location.origin + '/rooms?join=' + encodeURIComponent(room.roomId);
+      const pwPart = myRoomPassword ? '&pw=' + encodeURIComponent(myRoomPassword) : '';
+      document.getElementById('share-link').value = location.origin + '/rooms?join=' + encodeURIComponent(room.roomId) + pwPart;
       document.getElementById('share-section').style.display = 'block';
     }
   });
@@ -364,7 +384,8 @@ function setupGameLobbyHandlers() {
     isMaster = (master === mySessionId);
     updateStartBtn();
     if (isMaster) {
-      document.getElementById('share-link').value = location.origin + '/rooms?join=' + encodeURIComponent(room.roomId);
+      const pwPart = myRoomPassword ? '&pw=' + encodeURIComponent(myRoomPassword) : '';
+      document.getElementById('share-link').value = location.origin + '/rooms?join=' + encodeURIComponent(room.roomId) + pwPart;
       document.getElementById('share-section').style.display = 'block';
     }
   });
@@ -488,8 +509,17 @@ function openCreateModal() {
   document.getElementById('create-modal').classList.add('open');
   setTimeout(() => document.getElementById('c-name').focus(), 100);
 }
-function openJoinModal()   { document.getElementById('join-modal').classList.add('open'); }
+function openJoinModal() {
+  pendingLockedRoomId = '';
+  document.getElementById('j-id-field').style.display = 'block';
+  document.getElementById('j-id').value = '';
+  document.getElementById('j-pass').value = '';
+  document.getElementById('j-error').textContent = '';
+  document.getElementById('join-modal').classList.add('open');
+  setTimeout(() => document.getElementById('j-id').focus(), 100);
+}
 function closeModals() {
+  pendingLockedRoomId = '';
   document.getElementById('create-modal').classList.remove('open');
   document.getElementById('join-modal').classList.remove('open');
 }
@@ -513,10 +543,22 @@ function esc(s) {
 }
 
 // ── Auto-join from share link ─────────────────────────────────────────────
-const autoJoin = new URLSearchParams(location.search).get('join');
-if (autoJoin) {
-  joinRoom(autoJoin);
-}
+(async () => {
+  const params = new URLSearchParams(location.search);
+  const autoJoin = params.get('join');
+  if (!autoJoin) return;
+  const autoPw = params.get('pw') || '';
+  myRoomPassword = autoPw;
+  try {
+    gameLobbyRoom = await colyseusClient.joinById(autoJoin, {
+      playerName: myName, color: myColor, password: autoPw,
+    });
+    mySessionId = gameLobbyRoom.sessionId;
+    setupGameLobbyHandlers();
+  } catch (e) {
+    showError('Failed to join: ' + (e.message || 'room not found or wrong password'));
+  }
+})();
 </script>
 </body>
 </html>
