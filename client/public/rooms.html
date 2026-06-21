@@ -255,9 +255,13 @@ connectToLobby();
 // ── Room list rendering ─────────────────────────────────────────────────────
 function renderRoomList(rooms) {
   const el = document.getElementById('room-list');
-  const visible = rooms.filter(r => !r.metadata?.open === false || r.metadata?.open !== false);
-  // Show rooms where open is true (or unset) — private rooms are hidden from list (private: true on server)
-  const publicRooms = rooms.filter(r => r.metadata?.open !== false);
+  const publicRooms = rooms.filter(r =>
+    r.metadata &&
+    r.metadata.open === true &&
+    typeof r.metadata.name === 'string' &&
+    r.metadata.name.length > 0 &&
+    r.clients < r.maxClients
+  );
   if (publicRooms.length === 0) {
     el.innerHTML = '<div class="empty-msg">No rooms yet. Create one!</div>';
     return;
