@@ -56,6 +56,9 @@ export class PuzGameLobby extends Room {
       try {
         const mapSize = Math.min(16, Math.max(2, parseInt(data?.mapSize) || 8));
         const gameRoom = await matchMaker.createRoom("puz_room", { mapSize });
+        // Hide from lobby listing immediately — prevents ghost room appearing while
+        // clients disconnect from this lobby and navigate to the game.
+        await this.setPrivate(true);
         this.broadcast('room:launch:start', {});
         setTimeout(() => {
           this.broadcast('room:game:start', { roomId: gameRoom.roomId });
@@ -109,9 +112,11 @@ export class PuzGameLobby extends Room {
     if (!p) return;
     delete this.lobbyPlayers[client.sessionId];
 
-    await this.setMetadata({ players: Object.keys(this.lobbyPlayers).length });
-
+    // Early-return BEFORE setMetadata when room is now empty — avoids advertising
+    // a 0-player entry that appears as a ghost in the lobby before autoDispose fires.
     if (Object.keys(this.lobbyPlayers).length === 0) return;
+
+    await this.setMetadata({ players: Object.keys(this.lobbyPlayers).length });
 
     this.broadcast('room:player:leave', { player: client.sessionId });
 

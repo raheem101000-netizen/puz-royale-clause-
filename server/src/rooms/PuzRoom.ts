@@ -142,10 +142,35 @@ export class PuzRoom extends Room {
 
     this.onMessage("puz:join", (client: Client, data: {name?:string;color?:string}) => {
       if (this.players[client.sessionId]) return;
+
+      const name = (data.name || 'Player').slice(0, 24);
+
+      // Reconnect: a slot with this name already exists (same player, new connection).
+      // Rehome it to the new sessionId so aliveCount stays correct and no duplicate spawns.
+      const dupId = Object.keys(this.players).find(id => this.players[id].name === name);
+      if (dupId) {
+        const existing = this.players[dupId];
+        existing.id = client.sessionId;
+        this.players[client.sessionId] = existing;
+        delete this.players[dupId];
+        if (this.active) {
+          client.send('puz:started', {
+            walls: this.walls, WW: this.WW, WH: this.WH, TILE: this.TILE,
+            zoneX: this.zoneX, zoneY: this.zoneY, zoneR: this.zoneR
+          });
+        }
+        const allPlayers = Object.values(this.players);
+        this.broadcast('puz:lobby', {
+          players: allPlayers.map(p => ({id:p.id,name:p.name,color:p.color})),
+          hostId: allPlayers[0]?.id || client.sessionId
+        });
+        return;
+      }
+
       const pos = spawnPos(this.WW, this.WH, this.zoneX, this.zoneY, this.zoneR, this.walls);
       this.players[client.sessionId] = {
         id: client.sessionId,
-        name: data.name || 'Player',
+        name,
         color: data.color || '#4CFF6C',
         x: pos.x, y: pos.y,
         hp: MAX_HP, maxHp: MAX_HP,
@@ -158,7 +183,6 @@ export class PuzRoom extends Room {
       };
       this.aliveCount++;
 
-      // If game is already running, send map info directly to the late joiner
       if (this.active) {
         client.send('puz:started', {
           walls: this.walls, WW: this.WW, WH: this.WH, TILE: this.TILE,
