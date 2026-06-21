@@ -44,7 +44,7 @@ interface Bullet {
 const PLAYER_R = 10;
 const BULLET_R = 4;
 const BULLET_SPEED = 9;
-const PLAYER_SPEED = 6.0;
+const PLAYER_SPEED = 5.2;
 const MAX_HP = 100;
 
 function generateWalls(WW: number, WH: number, playerCount: number): Wall[] {
