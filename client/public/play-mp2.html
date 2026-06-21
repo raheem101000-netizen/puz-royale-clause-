@@ -168,8 +168,8 @@ function drawPlayers() {
   serverPlayers.forEach(p => {
     if (!p.alive) return;
     const rp = renderPlayers[p.id] || (renderPlayers[p.id] = { x: p.x, y: p.y });
-    rp.x += (p.x - rp.x) * 0.9;
-    rp.y += (p.y - rp.y) * 0.9;
+    rp.x += (p.x - rp.x) * 0.6;
+    rp.y += (p.y - rp.y) * 0.6;
     const s = toScreen(rp.x, rp.y);
     if (s.x < -30 || s.x > CW+30 || s.y < -30 || s.y > CH+30) return;
     const isMe = p.id === myId;
