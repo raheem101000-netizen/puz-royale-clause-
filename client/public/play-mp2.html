@@ -88,28 +88,6 @@ let aliveCount = 0;
 let inputSeq = 0;
 let pendingInputs = [];
 
-// Client-side prediction state (local player only)
-const LOCAL_SPEED = 6.0; // MUST match server PLAYER_SPEED
-const LOCAL_R = 10;      // MUST match server PLAYER_R
-let predicted = null;    // {x,y} — locally predicted position for my player
-let drawnSelf = null;    // lerped draw position for smooth correction
-
-function clientIsWall(x, y, r) {
-  return walls.some(w => x+r>w.x && x-r<w.x+w.w && y+r>w.y && y-r<w.y+w.h);
-}
-function clientMove(pos, input) {
-  let dx = 0, dy = 0;
-  if (input.up)    dy = -1;
-  if (input.down)  dy =  1;
-  if (input.left)  dx = -1;
-  if (input.right) dx =  1;
-  if (dx && dy) { dx *= 0.707; dy *= 0.707; }
-  const nx = pos.x + dx * LOCAL_SPEED;
-  const ny = pos.y + dy * LOCAL_SPEED;
-  if (nx - LOCAL_R >= 0 && nx + LOCAL_R <= WW && !clientIsWall(nx, pos.y, LOCAL_R - 1)) pos.x = nx;
-  if (ny - LOCAL_R >= 0 && ny + LOCAL_R <= WH && !clientIsWall(pos.x, ny, LOCAL_R - 1)) pos.y = ny;
-}
-
 const urlP = new URLSearchParams(location.search);
 const roomId = urlP.get('room') || '';
 let myId = null;
@@ -144,12 +122,15 @@ function me() { return serverPlayers.find(p => p.id === myId); }
 function toScreen(wx, wy) { return { x: wx - camX, y: wy - camY }; }
 
 function updateCamera() {
+  const p = me();
+  if (!p) return;
   if (needsCamera) {
-    const src = predicted || me();
-    if (!src) return;
-    camX = Math.max(0, Math.min(WW - CW, src.x - CW/2));
-    camY = Math.max(0, Math.min(WH - CH, src.y - CH/2));
+    camX = p.x - CW/2;
+    camY = p.y - CH/2;
+    camX = Math.max(0, Math.min(WW - CW, camX));
+    camY = Math.max(0, Math.min(WH - CH, camY));
   } else {
+    // Small map: center it statically
     camX = (WW - CW) / 2;
     camY = (WH - CH) / 2;
   }
@@ -186,23 +167,12 @@ function drawWorld() {
 function drawPlayers() {
   serverPlayers.forEach(p => {
     if (!p.alive) return;
-    const isMe = p.id === myId;
-    let drawX, drawY;
-    if (isMe && predicted) {
-      // Local player: lerp drawnSelf toward predicted for smooth reconciliation correction
-      if (!drawnSelf) drawnSelf = { x: predicted.x, y: predicted.y };
-      drawnSelf.x += (predicted.x - drawnSelf.x) * 0.5;
-      drawnSelf.y += (predicted.y - drawnSelf.y) * 0.5;
-      drawX = drawnSelf.x; drawY = drawnSelf.y;
-    } else {
-      // Other players: server-interpolated as before
-      const rp = renderPlayers[p.id] || (renderPlayers[p.id] = { x: p.x, y: p.y });
-      rp.x += (p.x - rp.x) * 0.9;
-      rp.y += (p.y - rp.y) * 0.9;
-      drawX = rp.x; drawY = rp.y;
-    }
-    const s = toScreen(drawX, drawY);
+    const rp = renderPlayers[p.id] || (renderPlayers[p.id] = { x: p.x, y: p.y });
+    rp.x += (p.x - rp.x) * 0.9;
+    rp.y += (p.y - rp.y) * 0.9;
+    const s = toScreen(rp.x, rp.y);
     if (s.x < -30 || s.x > CW+30 || s.y < -30 || s.y > CH+30) return;
+    const isMe = p.id === myId;
     const r = p.r || 10;
     ctx.save(); ctx.translate(s.x, s.y);
     ctx.beginPath(); ctx.arc(0,0,r+3,0,Math.PI*2); ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fill();
@@ -239,8 +209,7 @@ function drawMinimap() {
   if (!needsCamera) return;
   const mmW=mm.width, mmH=mm.height, mmCX=mmW/2, mmCY=mmH/2;
   const p = me();
-  const src = predicted || p;
-  const px = src ? src.x : WW/2, py = src ? src.y : WH/2;
+  const px = p ? p.x : WW/2, py = p ? p.y : WH/2;
   const scX=mmW/WW, scY=mmH/WH;
   const offX=mmCX-px*scX, offY=mmCY-py*scY;
   const toX = wx => wx*scX+offX, toY = wy => wy*scY+offY;
@@ -289,16 +258,13 @@ function drawMinimap() {
   mctx.strokeStyle='rgba(255,255,255,0.35)'; mctx.lineWidth=2; mctx.stroke();
 }
 
-// Send input + advance prediction every 16ms — matches server tick rate exactly.
-// No change-based dedupe here: prediction must step every tick while a key is held,
-// just like the server moves every tick regardless of whether input changed.
-function tickInput() {
+let lastInputSent = '';
+function maybeSendInput() {
   if (!gameStarted) return;
   const p = me();
   if (!p || !p.alive) return;
-  const src = predicted || p;
   const worldMouseX = mouseX + camX, worldMouseY = mouseY + camY;
-  const angle = Math.atan2(worldMouseY - src.y, worldMouseX - src.x);
+  const angle = Math.atan2(worldMouseY - p.y, worldMouseX - p.x);
   const input = {
     up:    !!(keys['ArrowUp']    || keys['KeyW']),
     down:  !!(keys['ArrowDown']  || keys['KeyS']),
@@ -306,15 +272,16 @@ function tickInput() {
     right: !!(keys['ArrowRight'] || keys['KeyD']),
     angle, shooting: mouseDown, reload: !!(keys['KeyR'])
   };
-  if (!predicted) predicted = { x: p.x, y: p.y };
-  clientMove(predicted, input);
+  const key = JSON.stringify(input);
+  if (key === lastInputSent) return;
+  lastInputSent = key;
   inputSeq++;
   pendingInputs.push({ seq: inputSeq, input });
   socket.emit('puz:input', { roomId, input, seq: inputSeq });
 }
-setInterval(tickInput, 16);
 
 function draw() {
+  maybeSendInput();
   updateCamera();
   drawWorld();
   drawPlayers();
@@ -403,25 +370,9 @@ socket.on('puz:state', state => {
   Object.keys(renderPlayers).forEach(id => {
     if (!incoming.find(p => p.id===id)) delete renderPlayers[id];
   });
-  // Stage 3: reconcile predicted against server truth, replay unconfirmed inputs.
   const myState = incoming.find(p => p.id === myId);
-  if (myState) {
-    if (typeof myState.lastSeq === 'number') {
-      pendingInputs = pendingInputs.filter(pi => pi.seq > myState.lastSeq);
-    }
-    if (predicted) {
-      const gap = Math.hypot(predicted.x - myState.x, predicted.y - myState.y);
-      if (gap > 80) {
-        // Large desync (lag spike, server correction) — snap and clear rather than replay
-        predicted = { x: myState.x, y: myState.y };
-        drawnSelf = null;
-        pendingInputs = [];
-      } else {
-        // Normal: reset to server truth then replay still-pending inputs
-        predicted = { x: myState.x, y: myState.y };
-        for (const pi of pendingInputs) clientMove(predicted, pi.input);
-      }
-    }
+  if (myState && typeof myState.lastSeq === 'number') {
+    pendingInputs = pendingInputs.filter(pi => pi.seq > myState.lastSeq);
   }
 });
 
