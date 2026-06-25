@@ -1,4 +1,5 @@
 import { defineServer, defineRoom, monitor, LobbyRoom } from "colyseus";
+import { matchMaker } from "@colyseus/core";
 import express from "express";
 import path from "path";
 import { PuzGameLobby } from "./rooms/PuzGameLobby";
@@ -15,6 +16,19 @@ export const server = defineServer({
     },
 
     express: (app) => {
+        // Colyseus has no global "app"+"io"+"rooms" the way a plain
+        // socket.io server does — matchMaker.stats is the built-in
+        // equivalent (ccu = concurrent connected users, roomCount across
+        // all room types).
+        app.get("/status", (req, res) => {
+            res.json({
+                game: "Puz Royale",
+                activePlayers: matchMaker.stats.local.ccu,
+                activeRooms: matchMaker.stats.local.roomCount,
+                timestamp: new Date().toISOString()
+            });
+        });
+
         app.use("/colyseus", monitor());
 
         app.get('/', (_req, res) => {
