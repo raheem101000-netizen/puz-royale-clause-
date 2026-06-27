@@ -2,8 +2,15 @@ import { defineServer, defineRoom, monitor, LobbyRoom } from "colyseus";
 import { matchMaker } from "@colyseus/core";
 import express from "express";
 import path from "path";
+import { Pool } from "pg";
+import Stripe from "stripe";
 import { PuzGameLobby } from "./rooms/PuzGameLobby";
 import { PuzRoom } from "./rooms/PuzRoom";
+
+const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
+const neonPool = process.env.DATABASE_URL
+    ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+    : null;
 
 export const server = defineServer({
     rooms: {
@@ -16,6 +23,45 @@ export const server = defineServer({
     },
 
     express: (app) => {
+        // Stripe webhook — raw body must be read before any JSON middleware
+        app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+            if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
+            const sig = req.headers["stripe-signature"] as string;
+            let event: Stripe.Event;
+            try {
+                event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET!);
+            } catch (err: any) {
+                res.status(400).send(`Webhook Error: ${err.message}`);
+                return;
+            }
+            if (event.type === "checkout.session.completed") {
+                const session = event.data.object as Stripe.Checkout.Session;
+                if (neonPool) {
+                    await neonPool.query(
+                        "INSERT INTO sessions (game, mode, amount, stripe_payment_id) VALUES ($1, $2, $3, $4)",
+                        ["Puz Royale", "multiplayer", 2.99, session.payment_intent]
+                    ).catch(console.error);
+                }
+            }
+            res.json({ received: true });
+        });
+
+        // Multiplayer checkout — $2.99
+        app.post("/create-multiplayer-checkout", express.json(), async (req, res) => {
+            if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
+            try {
+                const session = await stripe.checkout.sessions.create({
+                    payment_method_types: ["card"],
+                    line_items: [{ price_data: { currency: "usd", product_data: { name: "Puz Royale Multiplayer" }, unit_amount: 299 }, quantity: 1 }],
+                    mode: "payment",
+                    metadata: { mode: "multiplayer" },
+                    success_url: `${process.env.BASE_URL}/rooms?paid=true&session_id={CHECKOUT_SESSION_ID}`,
+                    cancel_url: `${process.env.BASE_URL}/rooms`,
+                });
+                res.json({ url: session.url });
+            } catch (err: any) { res.status(500).json({ error: err.message }); }
+        });
+
         // Colyseus has no global "app"+"io"+"rooms" the way a plain
         // socket.io server does — matchMaker.stats is the built-in
         // equivalent (ccu = concurrent connected users, roomCount across
