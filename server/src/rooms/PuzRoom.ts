@@ -341,7 +341,7 @@ export class PuzRoom extends Room {
       if (alive[0]) {
         const winnerClient = this.clients.find(c => c.sessionId === alive[0].id);
         if (winnerClient) {
-          winnerClient.send('payout', { prize_amount: '$8', game: 'Puz Royale' });
+          winnerClient.send('payout', { prize_amount: '$8', game: 'Puz Royale Multiplayer' });
         }
       }
       this.stopGame();
