@@ -58,6 +58,17 @@ canvas#minimap{position:absolute;bottom:-36px;right:-36px;border-radius:50%;box-
     <h2 id="result-title">Eliminated</h2>
     <div id="result-place"></div>
     <div id="result-sub"></div>
+    <div id="puz-claim-form" style="display:none;text-align:center;padding:16px;width:100%;max-width:380px;font-family:system-ui;">
+      <div style="font-family:'Press Start 2P',monospace;font-size:11px;color:#ffe44d;margin-bottom:6px;">$8 PRIZE</div>
+      <div style="font-size:13px;color:rgba(255,255,255,0.65);line-height:1.6;margin-bottom:16px;">Enter your details to claim your prize. We'll send it to your PayPal within 48 hours.</div>
+      <input id="puz-name" type="text" placeholder="Full name" style="width:100%;padding:11px;margin-bottom:9px;background:#111;border:2px solid #ffe44d;color:#fff;font-size:14px;box-sizing:border-box;"/>
+      <input id="puz-paypal" type="email" placeholder="PayPal email" style="width:100%;padding:11px;margin-bottom:9px;background:#111;border:2px solid #ffe44d;color:#fff;font-size:14px;box-sizing:border-box;"/>
+      <input id="puz-contact" type="email" placeholder="Contact email" style="width:100%;padding:11px;margin-bottom:9px;background:#111;border:2px solid #ffe44d;color:#fff;font-size:14px;box-sizing:border-box;"/>
+      <textarea id="puz-notes" placeholder="No PayPal? Questions? (optional)" style="width:100%;padding:11px;margin-bottom:14px;background:#111;border:2px solid rgba(255,255,255,0.15);color:#fff;font-size:14px;box-sizing:border-box;height:68px;resize:none;"></textarea>
+      <button id="puz-claim-btn" style="width:100%;padding:13px;background:#ffe44d;color:#000;font-family:'Press Start 2P',monospace;font-size:9px;border:none;cursor:pointer;letter-spacing:1px;">► CLAIM MY PRIZE</button>
+      <div id="puz-claim-success" style="display:none;margin-top:14px;font-size:13px;color:#22ff6e;line-height:1.6;">✓ Claim received! Your prize will be sent to your PayPal within 48 hours.</div>
+      <div id="puz-claim-error" style="display:none;margin-top:10px;font-size:12px;color:#ff4757;"></div>
+    </div>
     <button id="again" onclick="location.href='/rooms'">Back to Lobby</button>
   </div>
 </div>
@@ -386,6 +397,38 @@ socket.on('puz:kill', ({ name, color }) => addElim(name, color));
 
 socket.on('puz:end', ({ winnerId, total }) => {
   showResult(winnerId===myId ? 1 : 2, total);
+});
+
+socket.on('payout', (data) => {
+  document.getElementById('puz-claim-form').style.display = 'block';
+  document.getElementById('again').style.display = 'none';
+  document.getElementById('puz-claim-btn').onclick = async function() {
+    const name    = (document.getElementById('puz-name').value || '').trim();
+    const paypal  = (document.getElementById('puz-paypal').value || '').trim();
+    const contact = (document.getElementById('puz-contact').value || '').trim();
+    const notes   = (document.getElementById('puz-notes').value || '').trim();
+    const errEl   = document.getElementById('puz-claim-error');
+    errEl.style.display = 'none';
+    if (!name) { errEl.style.display='block'; errEl.textContent='Please enter your full name'; return; }
+    if (!paypal && !notes) { errEl.style.display='block'; errEl.textContent='Please enter your PayPal email or leave a note'; return; }
+    const btn = document.getElementById('puz-claim-btn');
+    btn.textContent = 'SUBMITTING...'; btn.disabled = true;
+    try {
+      const resp = await fetch('https://puz-royale-clause-1.onrender.com/submit-prize-claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ winner_name: name, paypal_email: paypal, contact_email: contact, notes, game: data.game, prize_amount: data.prize_amount })
+      });
+      const result = await resp.json();
+      if (result.success) {
+        document.getElementById('puz-claim-success').style.display = 'block';
+        btn.style.display = 'none';
+      } else { throw new Error('failed'); }
+    } catch(e) {
+      btn.textContent = '► CLAIM MY PRIZE'; btn.disabled = false;
+      errEl.style.display = 'block'; errEl.textContent = 'Something went wrong. Please try again.';
+    }
+  };
 });
 
 
