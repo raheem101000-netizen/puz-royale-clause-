@@ -103,6 +103,7 @@ const urlP = new URLSearchParams(location.search);
 const roomId = urlP.get('room') || '';
 let myId = null;
 const myName = localStorage.getItem('puz_name') || ('Player' + Math.floor(Math.random() * 1000));
+const myPid = (() => { let id = localStorage.getItem('puz_pid'); if (!id) { id = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('puz_pid', id); } return id; })();
 const myColor = ['#4CFF6C','#FF4444','#FFD700','#4BA8FF','#FF8C00','#DA70D6','#00CED1','#FF69B4'][Math.floor(Math.random() * 8)];
 
 let keys = {}, mouseX = CW/2, mouseY = CH/2, mouseDown = false;
@@ -336,7 +337,7 @@ const socket = io();
 
 socket.on('connect', () => {
   myId = socket.id;
-  socket.emit('puz:join', { roomId, name: myName, color: myColor });
+  socket.emit('puz:join', { roomId, name: myName, color: myColor, pid: myPid });
   document.getElementById('wait-status').textContent = 'Joined — waiting for host to start…';
   setTimeout(() => socket.emit('puz:start', { roomId }), 700);
 });

@@ -182,11 +182,15 @@ const MAP_LABELS = {
 };
 (function(){
   const sel = document.getElementById('map-size-sel');
+  const blank = document.createElement('option');
+  blank.value = ''; blank.textContent = '— Select map size —';
+  sel.appendChild(blank);
   for(let p=2;p<=16;p++){
     const o=document.createElement('option');
-    o.value=p; o.textContent=MAP_LABELS[p]; if(p===8) o.selected=true;
+    o.value=p; o.textContent=MAP_LABELS[p];
     sel.appendChild(o);
   }
+  sel.addEventListener('change', () => updateStartBtn());
 })();
 let myName = localStorage.getItem('puz_name') || ('Player' + Math.floor(Math.random() * 1000));
 let myColor = COLORS[Math.floor(Math.random() * COLORS.length)];
@@ -276,7 +280,7 @@ function renderRoomList(rooms) {
       <div class="room-row">
         <div>
           <div class="room-name">${esc(r.metadata?.name || r.roomId)}${badge}</div>
-          <div class="room-meta">${r.clients || 0}/${r.maxClients || 8} players</div>
+          <div class="room-meta">${r.metadata?.players || r.clients || 0}/${r.maxClients || 16} players</div>
         </div>
         <button class="btn btn-red btn-sm" onclick="${joinFn}">JOIN</button>
       </div>
@@ -470,7 +474,8 @@ function updateStartBtn(readyCount, playerCount) {
   btn.classList.toggle('visible', isMaster);
   document.getElementById('map-size-row').style.display = isMaster ? 'block' : 'none';
   if (isMaster) {
-    btn.disabled = devMode ? false : ((readyCount || 0) < 1 || (playerCount || 0) < 2);
+    const mapPicked = !!parseInt(document.getElementById('map-size-sel').value);
+    btn.disabled = devMode ? !mapPicked : ((readyCount || 0) < 1 || (playerCount || 0) < 2 || !mapPicked);
   }
 }
 
@@ -482,7 +487,8 @@ function clickReady() {
 
 function clickStart() {
   if (!gameLobbyRoom) return;
-  const mapSize = parseInt(document.getElementById('map-size-sel').value) || 8;
+  const mapSize = parseInt(document.getElementById('map-size-sel').value);
+  if (!mapSize) { showError('Please select a map to continue'); return; }
   gameLobbyRoom.send('room:launch', devMode ? { dev: true, mapSize } : { mapSize });
 }
 

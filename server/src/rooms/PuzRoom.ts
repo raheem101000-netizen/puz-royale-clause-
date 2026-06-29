@@ -30,7 +30,7 @@ function mkZones(phases: number, diag: number): ZonePhase[] {
 interface Wall { x: number; y: number; w: number; h: number; }
 interface Input { up: boolean; down: boolean; left: boolean; right: boolean; angle: number; shooting: boolean; reload: boolean; }
 interface Player {
-  id: string; name: string; color: string;
+  id: string; name: string; color: string; pid?: string;
   x: number; y: number; hp: number; maxHp: number;
   alive: boolean; connected: boolean; angle: number; speed: number; r: number;
   ammo: number; maxAmmo: number; reloading: boolean; reloadTimer: number;
@@ -141,14 +141,16 @@ export class PuzRoom extends Room {
     this.zonePhases = mkZones(phasesFor(playerCount), diag);
     this.walls = generateWalls(this.WW, this.WH, playerCount);
 
-    this.onMessage("puz:join", (client: Client, data: {name?:string;color?:string}) => {
+    this.onMessage("puz:join", (client: Client, data: {name?:string;color?:string;pid?:string}) => {
       if (this.players[client.sessionId]) return;
 
       const name = (data.name || 'Player').slice(0, 24);
+      const pid = data.pid || '';
 
-      // Reconnect: a slot with this name already exists (same player, new connection).
-      // Rehome it to the new sessionId so aliveCount stays correct and no duplicate spawns.
-      const dupId = Object.keys(this.players).find(id => this.players[id].name === name);
+      // Reconnect: match by persistent player ID (pid) first, then fall back to name.
+      const dupId = pid
+        ? Object.keys(this.players).find(id => this.players[id].pid === pid)
+        : Object.keys(this.players).find(id => this.players[id].name === name);
       if (dupId) {
         const existing = this.players[dupId];
         existing.id = client.sessionId;
@@ -173,6 +175,7 @@ export class PuzRoom extends Room {
         id: client.sessionId,
         name,
         color: data.color || '#4CFF6C',
+        pid,
         x: pos.x, y: pos.y,
         hp: MAX_HP, maxHp: MAX_HP,
         alive: true, connected: true, angle: 0, lastSeq: 0,
