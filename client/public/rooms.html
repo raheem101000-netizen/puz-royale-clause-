@@ -280,7 +280,7 @@ function renderRoomList(rooms) {
       <div class="room-row">
         <div>
           <div class="room-name">${esc(r.metadata?.name || r.roomId)}${badge}</div>
-          <div class="room-meta">${r.metadata?.players || r.clients || 0}/${r.maxClients || 16} players</div>
+          <div class="room-meta">${r.clients || 0} players</div>
         </div>
         <button class="btn btn-red btn-sm" onclick="${joinFn}">JOIN</button>
       </div>
