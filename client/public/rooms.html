@@ -173,6 +173,14 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
 <script src="/colyseus-sdk.js"></script>
 <script>
 const devMode = new URLSearchParams(window.location.search).get('dev') === 'MEDIATEST';
+
+// TEMPORARY SOLO-TEST MODE — lets the Start button launch with just 1 player, for
+// testing. Set to false (or delete this line) to restore the normal 2-player minimum.
+// No server change needed for launching itself: PuzGameLobby's room:launch already only
+// requires 1 ready player, not 2 — the "2 players" rule was purely this client-side
+// button-disable. (A matching SOLO_TEST flag in server/src/rooms/PuzRoom.ts separately
+// lets a solo match actually end on death instead of hanging forever.)
+const SOLO_TEST = true;
 const COLORS = ['#4CFF6C','#FF4444','#FFD700','#4BA8FF','#FF8C00','#DA70D6','#00CED1','#FF69B4'];
 const MAP_LABELS = {
   2:'2p — 600×400',3:'3p — 700×500',4:'4p — 800×500',
@@ -475,7 +483,7 @@ function updateStartBtn(readyCount, playerCount) {
   document.getElementById('map-size-row').style.display = isMaster ? 'block' : 'none';
   if (isMaster) {
     const mapPicked = !!parseInt(document.getElementById('map-size-sel').value);
-    btn.disabled = devMode ? !mapPicked : ((readyCount || 0) < 1 || (playerCount || 0) < 2 || !mapPicked);
+    btn.disabled = devMode ? !mapPicked : ((readyCount || 0) < 1 || (!SOLO_TEST && (playerCount || 0) < 2) || !mapPicked);
   }
 }
 

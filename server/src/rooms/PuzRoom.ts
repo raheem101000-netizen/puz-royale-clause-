@@ -1,5 +1,11 @@
 import { Room, Client } from "@colyseus/core";
 
+// TEMPORARY SOLO-TEST MODE — mirrors the client's SOLO_TEST flag in rooms.html. Lets a
+// match that started with only 1 player actually end (broadcast puz:end) when that
+// player dies, instead of checkWinCondition() silently returning forever. Set to false
+// to restore the normal rule that a match only ends once it started with 2+ players.
+const SOLO_TEST = true;
+
 // ── Map configs verbatim from puz-maptest.html ────────────────────────────
 const SIZES: Record<number, [number, number, number]> = {
   2:[600,400,28],   3:[700,500,28],   4:[800,500,30],
@@ -332,7 +338,7 @@ export class PuzRoom extends Room {
 
   private checkWinCondition() {
     if (!this.active) return;
-    if (this.startedPlayerCount < 2) return;
+    if (this.startedPlayerCount < 2 && !SOLO_TEST) return;
     const alive = Object.values(this.players).filter(p => p.alive);
     if (alive.length <= 1) {
       this.broadcast('puz:end', {
