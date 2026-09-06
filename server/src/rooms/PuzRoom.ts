@@ -37,7 +37,7 @@ interface Wall { x: number; y: number; w: number; h: number; }
 interface Input { up: boolean; down: boolean; left: boolean; right: boolean; angle: number; shooting: boolean; reload: boolean; }
 interface Player {
   id: string; name: string; color: string; pid?: string;
-  x: number; y: number; hp: number; maxHp: number;
+  x: number; y: number; vx: number; vy: number; hp: number; maxHp: number;
   alive: boolean; connected: boolean; angle: number; speed: number; r: number;
   ammo: number; maxAmmo: number; reloading: boolean; reloadTimer: number;
   shootCooldown: number; input: Input; lastSeq: number;
@@ -106,10 +106,28 @@ function spawnPos(WW: number, WH: number, zoneX: number, zoneY: number, zoneR: n
 }
 
 function moveEntity(e: Player, dx: number, dy: number, WW: number, WH: number, walls: Wall[]) {
-  const nx = e.x + dx * e.speed;
-  const ny = e.y + dy * e.speed;
+  // Ease toward target velocity on axes with input; apply friction on axes without.
+  if (dx !== 0) {
+    const targetVx = dx * e.speed;
+    e.vx += (targetVx - e.vx) * 0.22;
+  } else {
+    e.vx *= 0.86;
+    if (Math.abs(e.vx) < 0.02) e.vx = 0;
+  }
+  if (dy !== 0) {
+    const targetVy = dy * e.speed;
+    e.vy += (targetVy - e.vy) * 0.22;
+  } else {
+    e.vy *= 0.86;
+    if (Math.abs(e.vy) < 0.02) e.vy = 0;
+  }
+
+  const nx = e.x + e.vx;
+  const ny = e.y + e.vy;
   if(nx-e.r>=0 && nx+e.r<=WW && !isWall(nx, e.y, e.r-1, walls)) e.x = nx;
+  else e.vx = 0;
   if(ny-e.r>=0 && ny+e.r<=WH && !isWall(e.x, ny, e.r-1, walls)) e.y = ny;
+  else e.vy = 0;
 }
 
 export class PuzRoom extends Room {
@@ -183,6 +201,7 @@ export class PuzRoom extends Room {
         color: data.color || '#4CFF6C',
         pid,
         x: pos.x, y: pos.y,
+        vx: 0, vy: 0,
         hp: MAX_HP, maxHp: MAX_HP,
         alive: true, connected: true, angle: 0, lastSeq: 0,
         speed: PLAYER_SPEED, r: PLAYER_R,
