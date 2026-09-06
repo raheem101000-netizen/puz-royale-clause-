@@ -143,6 +143,7 @@ export class PuzRoom extends Room {
   private startedPlayerCount = 0;
   private loop: ReturnType<typeof setInterval> | null = null;
   private zoneInterval: ReturnType<typeof setInterval> | null = null;
+  private lastTickAt = 0; // diagnostics: detect dropped/slow ticks (expected interval 16ms)
 
   // Zone state (circular, verbatim from test file)
   private zoneX = 0; private zoneY = 0; private zoneR = 0;
@@ -151,6 +152,12 @@ export class PuzRoom extends Room {
   private zonePhaseIdx = 0;
   private zoneTimer = 0;
   private shrinking = false;
+
+  // Diagnostics: raw WS-level connect, independent of the app-level "puz:join" message.
+  // Lets Render's log stream show reconnect churn even before a client re-sends puz:join.
+  onJoin(client: Client) {
+    console.log(`[PuzRoom ${this.roomId}] ws connect sessionId=${client.sessionId} clients=${this.clients.length}`);
+  }
 
   async onCreate(options: any) {
     const playerCount = Math.min(16, Math.max(2, parseInt(options?.mapSize) || 8));
@@ -176,6 +183,7 @@ export class PuzRoom extends Room {
         ? Object.keys(this.players).find(id => this.players[id].pid === pid)
         : Object.keys(this.players).find(id => this.players[id].name === name);
       if (dupId) {
+        console.log(`[PuzRoom ${this.roomId}] app-level rejoin name="${name}" oldSessionId=${dupId} newSessionId=${client.sessionId}`);
         const existing = this.players[dupId];
         existing.id = client.sessionId;
         this.players[client.sessionId] = existing;
@@ -242,6 +250,7 @@ export class PuzRoom extends Room {
 
   async onLeave(client: Client, code?: number) {
     const p = this.players[client.sessionId];
+    console.log(`[PuzRoom ${this.roomId}] ws disconnect sessionId=${client.sessionId} code=${code} name=${p?.name ?? '?'}`);
     if (!p) return;
 
     // code 1000 = normal closure (client called room.leave()) — remove immediately.
@@ -258,8 +267,10 @@ export class PuzRoom extends Room {
     try {
       await this.allowReconnection(client, 20);
       p.connected = true;
+      console.log(`[PuzRoom ${this.roomId}] reconnected within grace sessionId=${client.sessionId} name=${p.name}`);
     } catch {
       // Grace expired — truly gone.
+      console.log(`[PuzRoom ${this.roomId}] reconnect grace expired, removing sessionId=${client.sessionId} name=${p.name}`);
       this.removePlayer(client.sessionId);
     }
   }
@@ -377,6 +388,17 @@ export class PuzRoom extends Room {
   }
 
   private puzTick() {
+    // Diagnostics: setInterval is best-effort — GC pauses, CPU throttling (e.g. free-tier
+    // hosting), or a slow previous tick all show up as a gap longer than the 16ms budget.
+    const now = Date.now();
+    if (this.lastTickAt) {
+      const interval = now - this.lastTickAt;
+      if (interval > 32) { // more than ~2 ticks' worth of drift
+        console.warn(`[PuzRoom ${this.roomId}] tick drift: ${interval}ms since last tick (expected 16ms)`);
+      }
+    }
+    this.lastTickAt = now;
+
     const players = Object.values(this.players);
 
     for (const p of players) {
