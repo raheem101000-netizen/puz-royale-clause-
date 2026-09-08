@@ -149,12 +149,33 @@ function updateCamera() {
 }
 
 function drawWorld() {
-  ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, CW, CH);
-  ctx.fillStyle = '#222';
-  for (let x = (-camX % TILE + TILE) % TILE; x < CW; x += TILE)
-    for (let y = (-camY % TILE + TILE) % TILE; y < CH; y += TILE)
-      if ((Math.floor((x+camX)/TILE) + Math.floor((y+camY)/TILE)) % 2 === 0)
-        ctx.fillRect(x, y, TILE, TILE);
+  // Void: covers the whole canvas so any strip beyond the real WW×WH play
+  // area (visible on maps smaller than the CW×CH canvas, e.g. 600x400/700x500)
+  // reads as clearly "not ground" instead of fake floor.
+  ctx.fillStyle = '#0a0a0d'; ctx.fillRect(0, 0, CW, CH);
+
+  // True play area in screen space, clipped to what's on-canvas right now.
+  const areaX0 = -camX, areaY0 = -camY;
+  const areaX1 = WW - camX, areaY1 = WH - camY;
+  const clipX0 = Math.max(0, areaX0), clipY0 = Math.max(0, areaY0);
+  const clipX1 = Math.min(CW, areaX1), clipY1 = Math.min(CH, areaY1);
+
+  if (clipX1 > clipX0 && clipY1 > clipY0) {
+    ctx.save();
+    ctx.beginPath(); ctx.rect(clipX0, clipY0, clipX1 - clipX0, clipY1 - clipY0); ctx.clip();
+    ctx.fillStyle = '#1a1a1a'; ctx.fillRect(clipX0, clipY0, clipX1 - clipX0, clipY1 - clipY0);
+    ctx.fillStyle = '#222';
+    for (let x = (-camX % TILE + TILE) % TILE; x < CW; x += TILE)
+      for (let y = (-camY % TILE + TILE) % TILE; y < CH; y += TILE)
+        if ((Math.floor((x+camX)/TILE) + Math.floor((y+camY)/TILE)) % 2 === 0)
+          ctx.fillRect(x, y, TILE, TILE);
+    ctx.restore();
+  }
+
+  // Boundary wall at the true WW/WH edge — only draws (or partially draws)
+  // when that edge is within view, same as any other in-world wall.
+  ctx.strokeStyle = '#ff3b3b'; ctx.lineWidth = 4;
+  ctx.strokeRect(areaX0, areaY0, WW, WH);
 
   // Zone (circular)
   if (zoneR < maxZoneR * 0.98) {
