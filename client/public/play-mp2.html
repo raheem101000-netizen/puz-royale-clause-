@@ -86,6 +86,10 @@ let WW = 1300, WH = 800, TILE = 34;
 let walls = [];
 let needsCamera = true;
 let camX = 0, camY = 0;
+// World->screen scale. 1:1 on big camera-following maps; on maps smaller
+// than the CW×CH canvas, stretched so the real WW×WH play area exactly
+// fills the canvas (no void, no fake floor beyond the true edge).
+let scaleX = 1, scaleY = 1, scaleAvg = 1;
 
 // Zone state (circular)
 let zoneX = 0, zoneY = 0, zoneR = 1e9;
@@ -131,7 +135,7 @@ canvas.addEventListener('touchmove', e => {
 }, { passive: false });
 
 function me() { return serverPlayers.find(p => p.id === myId); }
-function toScreen(wx, wy) { return { x: wx - camX, y: wy - camY }; }
+function toScreen(wx, wy) { return { x: (wx - camX) * scaleX, y: (wy - camY) * scaleY }; }
 
 function updateCamera() {
   const p = me();
@@ -142,58 +146,53 @@ function updateCamera() {
     camX = Math.max(0, Math.min(WW - CW, camX));
     camY = Math.max(0, Math.min(WH - CH, camY));
   } else {
-    // Small map: center it statically
-    camX = (WW - CW) / 2;
-    camY = (WH - CH) / 2;
+    // Small map: scale (set on puz:started) already fills the canvas
+    // exactly from the world origin, so there's nothing to pan.
+    camX = 0; camY = 0;
   }
 }
 
 function drawWorld() {
-  // Void: covers the whole canvas so any strip beyond the real WW×WH play
-  // area (visible on maps smaller than the CW×CH canvas, e.g. 600x400/700x500)
-  // reads as clearly "not ground" instead of fake floor.
-  ctx.fillStyle = '#0a0a0d'; ctx.fillRect(0, 0, CW, CH);
+  ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, CW, CH);
+  ctx.fillStyle = '#222';
+  const worldRight = camX + CW/scaleX, worldBottom = camY + CH/scaleY;
+  // Same remainder trick as the pre-scale version: the first tile boundary
+  // at/after camX, so a scale=1 camera reproduces the old pixel grid exactly.
+  const startTileX = camX + ((-camX % TILE + TILE) % TILE);
+  const startTileY = camY + ((-camY % TILE + TILE) % TILE);
+  for (let wx = startTileX; wx < worldRight; wx += TILE)
+    for (let wy = startTileY; wy < worldBottom; wy += TILE)
+      if ((Math.floor(wx/TILE) + Math.floor(wy/TILE)) % 2 === 0) {
+        const s = toScreen(wx, wy);
+        ctx.fillRect(s.x, s.y, TILE*scaleX, TILE*scaleY);
+      }
 
-  // True play area in screen space, clipped to what's on-canvas right now.
-  const areaX0 = -camX, areaY0 = -camY;
-  const areaX1 = WW - camX, areaY1 = WH - camY;
-  const clipX0 = Math.max(0, areaX0), clipY0 = Math.max(0, areaY0);
-  const clipX1 = Math.min(CW, areaX1), clipY1 = Math.min(CH, areaY1);
-
-  if (clipX1 > clipX0 && clipY1 > clipY0) {
-    ctx.save();
-    ctx.beginPath(); ctx.rect(clipX0, clipY0, clipX1 - clipX0, clipY1 - clipY0); ctx.clip();
-    ctx.fillStyle = '#1a1a1a'; ctx.fillRect(clipX0, clipY0, clipX1 - clipX0, clipY1 - clipY0);
-    ctx.fillStyle = '#222';
-    for (let x = (-camX % TILE + TILE) % TILE; x < CW; x += TILE)
-      for (let y = (-camY % TILE + TILE) % TILE; y < CH; y += TILE)
-        if ((Math.floor((x+camX)/TILE) + Math.floor((y+camY)/TILE)) % 2 === 0)
-          ctx.fillRect(x, y, TILE, TILE);
-    ctx.restore();
-  }
-
-  // Boundary wall at the true WW/WH edge — only draws (or partially draws)
-  // when that edge is within view, same as any other in-world wall.
+  // Boundary wall at the true WW/WH edge — on small scaled-to-fit maps this
+  // sits exactly on the canvas edge (floor fills edge to edge); on big
+  // camera-following maps it only comes into view near the real edge.
+  const edge = toScreen(0, 0);
   ctx.strokeStyle = '#ff3b3b'; ctx.lineWidth = 4;
-  ctx.strokeRect(areaX0, areaY0, WW, WH);
+  ctx.strokeRect(edge.x, edge.y, WW*scaleX, WH*scaleY);
 
   // Zone (circular)
   if (zoneR < maxZoneR * 0.98) {
     const sc = toScreen(zoneX, zoneY);
+    const zr = zoneR * scaleAvg;
     ctx.save();
     ctx.beginPath(); ctx.rect(0, 0, CW, CH);
-    ctx.arc(sc.x, sc.y, zoneR, 0, Math.PI*2, true);
+    ctx.arc(sc.x, sc.y, zr, 0, Math.PI*2, true);
     ctx.fillStyle = 'rgba(255,40,40,0.25)'; ctx.fill('evenodd'); ctx.restore();
-    ctx.beginPath(); ctx.arc(sc.x, sc.y, zoneR, 0, Math.PI*2);
+    ctx.beginPath(); ctx.arc(sc.x, sc.y, zr, 0, Math.PI*2);
     ctx.strokeStyle = 'rgba(255,60,60,0.9)'; ctx.lineWidth = 2; ctx.stroke();
   }
 
   walls.forEach(w => {
     const s = toScreen(w.x, w.y);
-    if (s.x+w.w<0 || s.x>CW || s.y+w.h<0 || s.y>CH) return;
-    ctx.fillStyle = '#8B0000'; ctx.fillRect(s.x, s.y, w.w, w.h);
-    ctx.fillStyle = 'rgba(255,60,60,0.12)'; ctx.fillRect(s.x, s.y, w.w, 5);
-    ctx.strokeStyle = '#600000'; ctx.lineWidth = 0.5; ctx.strokeRect(s.x, s.y, w.w, w.h);
+    const ww = w.w*scaleX, wh = w.h*scaleY;
+    if (s.x+ww<0 || s.x>CW || s.y+wh<0 || s.y>CH) return;
+    ctx.fillStyle = '#8B0000'; ctx.fillRect(s.x, s.y, ww, wh);
+    ctx.fillStyle = 'rgba(255,60,60,0.12)'; ctx.fillRect(s.x, s.y, ww, 5*scaleY);
+    ctx.strokeStyle = '#600000'; ctx.lineWidth = 0.5; ctx.strokeRect(s.x, s.y, ww, wh);
   });
 }
 
@@ -206,7 +205,7 @@ function drawPlayers() {
     const s = toScreen(rp.x, rp.y);
     if (s.x < -30 || s.x > CW+30 || s.y < -30 || s.y > CH+30) return;
     const isMe = p.id === myId;
-    const r = p.r || 10;
+    const r = (p.r || 10) * scaleAvg;
     ctx.save(); ctx.translate(s.x, s.y);
     ctx.beginPath(); ctx.arc(0,0,r+3,0,Math.PI*2); ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fill();
     ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.fillStyle=p.color||'#fff'; ctx.fill();
@@ -229,10 +228,11 @@ function drawBullets() {
   serverBullets.forEach(b => {
     const s = toScreen(b.x, b.y);
     if (s.x<-10||s.x>CW+10||s.y<-10||s.y>CH+10) return;
-    ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, Math.PI*2);
+    ctx.beginPath(); ctx.arc(s.x, s.y, 4*scaleAvg, 0, Math.PI*2);
     ctx.fillStyle = b.color||'#fff'; ctx.fill();
     if (b.vx !== undefined) {
-      ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(s.x-b.vx*3, s.y-b.vy*3);
+      const trail = toScreen(b.x - b.vx*3, b.y - b.vy*3);
+      ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(trail.x, trail.y);
       ctx.strokeStyle = (b.color||'#fff')+'88'; ctx.lineWidth=2; ctx.stroke();
     }
   });
@@ -296,7 +296,7 @@ function maybeSendInput() {
   if (!gameStarted) return;
   const p = me();
   if (!p || !p.alive) return;
-  const worldMouseX = mouseX + camX, worldMouseY = mouseY + camY;
+  const worldMouseX = mouseX/scaleX + camX, worldMouseY = mouseY/scaleY + camY;
   const angle = Math.atan2(worldMouseY - p.y, worldMouseX - p.x);
   const input = {
     up:    !!(keys['ArrowUp']    || keys['KeyW']),
@@ -382,7 +382,15 @@ socket.on('puz:started', data => {
   maxZoneR = Math.sqrt(WW*WW + WH*WH)/2 + 100;
   needsCamera = (WW > CW || WH > CH);
   mm.style.display = needsCamera ? 'block' : 'none';
-  if (!needsCamera) { camX = (WW-CW)/2; camY = (WH-CH)/2; }
+  if (needsCamera) {
+    scaleX = 1; scaleY = 1;
+  } else {
+    // Small map: stretch so the real WW×WH play area fills the canvas
+    // exactly — floor edge to edge, true collision boundary at the canvas edge.
+    scaleX = CW / WW; scaleY = CH / WH;
+    camX = 0; camY = 0;
+  }
+  scaleAvg = (scaleX + scaleY) / 2;
   document.getElementById('map-txt').textContent = WW+'×'+WH;
   gameStarted = true;
   document.getElementById('wait').style.display = 'none';
