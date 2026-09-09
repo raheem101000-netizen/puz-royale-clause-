@@ -79,25 +79,9 @@ function generateWalls(WW: number, WH: number, playerCount: number): Wall[] {
       w.push({x,y,w:blockW,h:Math.max(12,WH*0.015)});
       w.push({x,y,w:Math.max(12,WW*0.008),h:blockH});
     } else {
-      // L-shape: a horizontal arm and a vertical arm sharing one corner.
-      // The corner sits on the side of the bounding box nearest the map
-      // center, so the solid corner faces inward (toward the mid-map
-      // fight) and the two arms sweep away from center.
-      const armLenX = blockW * (1.6 + Math.random()*0.6);
-      const armLenY = blockH * (1.6 + Math.random()*0.6);
-      const th = Math.max(12, Math.min(WW, WH)*0.02);
-      const left = x < WW/2;
-      const top = y < WH/2;
-      const boxLeft = x - armLenX/2, boxTop = y - armLenY/2;
-      const boxRight = boxLeft + armLenX, boxBottom = boxTop + armLenY;
-      const hArm = top
-        ? {x:boxLeft, y:boxBottom-th, w:armLenX, h:th}   // hugs bottom edge
-        : {x:boxLeft, y:boxTop,       w:armLenX, h:th};  // hugs top edge
-      const vArm = left
-        ? {x:boxRight-th, y:boxTop, w:th, h:armLenY}     // hugs right edge
-        : {x:boxLeft,     y:boxTop, w:th, h:armLenY};    // hugs left edge
-      w.push(hArm);
-      w.push(vArm);
+      const bw = blockW * (0.7 + Math.random()*0.6);
+      const bh = blockH * (0.7 + Math.random()*0.6);
+      w.push({x:x-bw/2,y:y-bh/2,w:bw,h:bh});
     }
   });
   return w;
