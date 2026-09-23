@@ -103,6 +103,7 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
         Join or create a room to start
       </div>
       <div class="detail" id="room-detail">
+        <div id="prize-counter" style="margin:0 18px 4px;padding:10px 14px;background:rgba(255,50,50,0.08);border:1px solid rgba(255,50,50,0.25);border-radius:8px;font-size:13px;font-weight:600;text-align:center;color:#FF5555;"></div>
         <div class="player-list" id="player-list"></div>
         <div id="share-section" style="display:none;margin:0 18px 12px;">
           <div style="font-size:10px;color:rgba(100,180,255,0.5);letter-spacing:2px;margin-bottom:8px;">INVITE FRIENDS</div>
@@ -436,10 +437,27 @@ function setupGameLobbyHandlers() {
 }
 
 // ── Detail panel ────────────────────────────────────────────────────────────
+// Universal prize formula, for any player count: $2 x (playerCount - 1),
+// except 3 players shows $5 not $4. Below 3 players there's no prize yet.
+function prizeForCount(n) {
+  if (n < 3) return null;
+  if (n === 3) return 5;
+  return 2 * (n - 1);
+}
+
+function updatePrizeCounter(n) {
+  const el = document.getElementById('prize-counter');
+  const prize = prizeForCount(n);
+  el.textContent = prize === null
+    ? 'Waiting for players… (min 3)'
+    : n + ' players — Prize: $' + prize;
+}
+
 function renderDetail(room) {
   document.getElementById('no-room-msg').style.display = 'none';
   document.getElementById('room-detail').classList.add('visible');
   document.getElementById('detail-title').textContent = room.name;
+  updatePrizeCounter((room.players || []).length);
 
   const pl = document.getElementById('player-list');
   pl.innerHTML = (room.players || []).map(p => `
@@ -466,6 +484,7 @@ function resetDetail() {
   document.getElementById('chat-box').innerHTML = '';
   document.getElementById('share-section').style.display = 'none';
   document.getElementById('room-error').textContent = '';
+  document.getElementById('prize-counter').textContent = '';
 }
 
 function updateReadyBtn() {
