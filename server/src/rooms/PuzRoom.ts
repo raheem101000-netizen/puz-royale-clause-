@@ -18,6 +18,7 @@ const START_DEADLINE_MS = Number(process.env.PUZ_START_DEADLINE_MS) || 10_000;
 type CreditState =
   | { status: 'credited'; amount: string }
   | { status: 'none' }      // prize is $0 (fewer than 3 players started)
+  | { status: 'disabled' }  // payouts switched off (PUZ_PAYOUTS_ENABLED not "true")
   | { status: 'failed' };
 
 // ── Map configs verbatim from puz-maptest.html ────────────────────────────
@@ -472,7 +473,9 @@ export class PuzRoom extends Room {
           matchId: this.roomId, winnerUserId, loserUserIds, amount, startedPlayers: this.startedPlayerCount,
         });
         console.log(`[puz-credit] match ${this.roomId} → user ${winnerUserId}: ${out.status}` +
-          (out.status === 'credited' ? ` $${out.amount} (${out.balanceBefore} → ${out.balanceAfter})` : ''));
+          (out.status === 'credited' ? ` $${out.amount} (${out.balanceBefore} → ${out.balanceAfter})` : '') +
+          (out.status === 'disabled' ? ` — would have been $${amount}; payouts are OFF (PUZ_PAYOUTS_ENABLED)` : ''));
+        if (out.status === 'disabled') return { status: 'disabled' };
         return { status: 'credited', amount }; // 'already_credited' means the money is already there
       } catch (e) {
         console.error(`[puz-credit] attempt ${i + 1} failed for match ${this.roomId} → user ${winnerUserId}:`, e);
