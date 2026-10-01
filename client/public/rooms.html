@@ -71,6 +71,13 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
 .countdown-overlay.show{display:flex;}
 .countdown-num{font-family:'Press Start 2P',monospace;font-size:72px;color:#FF3232;text-shadow:4px 4px 0 #7a0000;}
 .countdown-label{font-size:13px;color:rgba(255,255,255,0.5);letter-spacing:2px;}
+.account-chip{font-size:13px;font-weight:600;color:rgba(255,255,255,0.75);background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:7px 12px;}
+.account-chip::before{content:'●';color:#4CFF6C;margin-right:6px;font-size:10px;vertical-align:1px;}
+.login-gate{position:fixed;inset:0;background:rgba(0,0,0,0.94);display:flex;align-items:center;justify-content:center;z-index:300;padding:16px;}
+.login-gate .modal{text-align:center;}
+.login-gate p{font-size:13px;color:rgba(255,255,255,0.55);line-height:1.6;margin-bottom:20px;}
+.login-gate a{display:inline-block;text-decoration:none;}
+.hidden{display:none !important;}
 @media(max-width:700px){.layout{grid-template-columns:1fr;}}
 </style>
 </head>
@@ -79,7 +86,7 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
   <div class="header">
     <a class="logo" href="/">PUZ ROYALE</a>
     <div class="header-right">
-      <input class="name-input" id="my-name" type="text" placeholder="Your name" maxlength="16">
+      <span class="account-chip hidden" id="account-name"></span>
       <button class="btn btn-red btn-sm" onclick="openJoinModal()">Join with Code</button>
       <button class="btn btn-ghost btn-sm" onclick="openCreateModal()">+ Create</button>
     </div>
@@ -164,6 +171,15 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
   </div>
 </div>
 
+<!-- Login gate: shown when there's no tenten.run login handoff token -->
+<div id="login-gate" class="login-gate hidden">
+  <div class="modal">
+    <h3>LOG IN TO PLAY</h3>
+    <p id="login-gate-msg">Puz Royale pays real prizes, so you need a tenten.run account. Log in on tenten.run, then press PLAY on Puz Royale.</p>
+    <a class="btn btn-red" id="login-gate-link" href="https://www.tenten.run/?play=puz">Log in on tenten.run to play</a>
+  </div>
+</div>
+
 <!-- Countdown Overlay -->
 <div class="countdown-overlay" id="countdown-overlay">
   <div class="countdown-num" id="countdown-num">3</div>
@@ -201,7 +217,35 @@ const MAP_LABELS = {
   }
   sel.addEventListener('change', () => updateStartBtn());
 })();
-let myName = localStorage.getItem('puz_name') || ('Player' + Math.floor(Math.random() * 1000));
+// ── tenten.run login handoff ─────────────────────────────────────────────────
+// Same pattern as FIFA / Pong solo: tenten.run issues a game_tokens token for
+// the logged-in account and redirects here with #token=…&player_id=…&name=…
+// (a fragment, so it never reaches server logs or Referer headers). It's kept
+// in sessionStorage for this tab (play-mp2 reads it too), stripped from the
+// address bar, and sent with every Colyseus join; the server's onAuth turns it
+// into the real user_id. No token → login gate.
+const TENTEN_ORIGIN = 'https://www.tenten.run';
+function readPuzAuth() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (h.get('token') && h.get('player_id')) {
+    const a = { token: h.get('token'), playerId: Number(h.get('player_id')), name: h.get('name') || '' };
+    try { sessionStorage.setItem('puz_auth', JSON.stringify(a)); } catch (_) {}
+    history.replaceState(null, '', location.pathname + location.search);
+    return a;
+  }
+  try { return JSON.parse(sessionStorage.getItem('puz_auth')) || null; } catch (_) { return null; }
+}
+let puzAuth = readPuzAuth();
+function showLoginGate(message) {
+  puzAuth = null;
+  try { sessionStorage.removeItem('puz_auth'); } catch (_) {}
+  if (message) document.getElementById('login-gate-msg').textContent = message;
+  // Carry a private-room invite (?join=&pw=) through the login round trip.
+  document.getElementById('login-gate-link').href = TENTEN_ORIGIN + '/?play=puz' + (location.search ? '&' + location.search.slice(1) : '');
+  document.getElementById('login-gate').classList.remove('hidden');
+}
+function isAuthError(e) { return e && (e.code === 401 || /log in|login has expired/i.test(e.message || '')); }
+let myName = puzAuth ? (puzAuth.name || 'Player') : 'Player';
 let myColor = COLORS[Math.floor(Math.random() * COLORS.length)];
 let isMaster = false;
 let isReady = false;
@@ -213,15 +257,17 @@ let mySessionId = null;
 let myRoomPassword = '';
 let pendingLockedRoomId = '';
 
-document.getElementById('my-name').value = myName;
-document.getElementById('my-name').addEventListener('change', e => {
-  myName = e.target.value.trim() || myName;
-  localStorage.setItem('puz_name', myName);
-});
 
 // ── Server URL ──────────────────────────────────────────────────────────────
 const serverURL = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host;
 const colyseusClient = new Colyseus.Client(serverURL);
+if (puzAuth) {
+  colyseusClient.auth.token = puzAuth.token;
+  document.getElementById('account-name').textContent = puzAuth.name || 'Player';
+  document.getElementById('account-name').classList.remove('hidden');
+} else {
+  showLoginGate();
+}
 
 // ── Room list: built-in Colyseus LobbyRoom (live push) ─────────────────────
 // localRooms keeps the current list so +/- updates can be applied incrementally.
@@ -265,7 +311,7 @@ async function connectToLobby() {
   }
 }
 
-connectToLobby();
+if (puzAuth) connectToLobby();
 
 // ── Room list rendering ─────────────────────────────────────────────────────
 function renderRoomList(rooms) {
@@ -306,6 +352,7 @@ function setType(t) {
 }
 
 async function createRoom() {
+  if (!puzAuth) { showLoginGate(); return; }
   const name = document.getElementById('c-name').value.trim();
   if (!name) { document.getElementById('c-error').textContent = 'Enter a room name'; return; }
   const isPrivate = roomType === 'private';
@@ -315,24 +362,27 @@ async function createRoom() {
   try {
     gameLobbyRoom = await colyseusClient.create('puz_game_lobby', {
       name, password,
-      playerName: myName, color: myColor,
+      playerId: puzAuth.playerId, color: myColor,
     });
     mySessionId = gameLobbyRoom.sessionId;
     setupGameLobbyHandlers();
   } catch (e) {
+    if (isAuthError(e)) { showLoginGate(e.message); return; }
     showError('Failed to create room: ' + (e.message || e));
   }
 }
 
 async function joinRoom(roomId) {
+  if (!puzAuth) { showLoginGate(); return; }
   if (gameLobbyRoom) return;
   try {
     gameLobbyRoom = await colyseusClient.joinById(roomId, {
-      playerName: myName, color: myColor,
+      playerId: puzAuth.playerId, color: myColor,
     });
     mySessionId = gameLobbyRoom.sessionId;
     setupGameLobbyHandlers();
   } catch (e) {
+    if (isAuthError(e)) { showLoginGate(e.message); return; }
     showError('Failed to join: ' + (e.message || e));
   }
 }
@@ -348,19 +398,21 @@ function joinLockedRoom(roomId) {
 }
 
 async function joinPrivate() {
+  if (!puzAuth) { showLoginGate(); return; }
   if (gameLobbyRoom) return;
   const password = document.getElementById('j-pass').value;
   const id = pendingLockedRoomId || document.getElementById('j-id').value.trim();
   if (!id) { document.getElementById('j-error').textContent = 'Enter a room ID'; return; }
   try {
     gameLobbyRoom = await colyseusClient.joinById(id, {
-      playerName: myName, color: myColor, password,
+      playerId: puzAuth.playerId, color: myColor, password,
     });
     mySessionId = gameLobbyRoom.sessionId;
     myRoomPassword = password;
     closeModals();
     setupGameLobbyHandlers();
   } catch (e) {
+    if (isAuthError(e)) { closeModals(); showLoginGate(e.message); return; }
     document.getElementById('j-error').textContent = 'Wrong password or room not found';
   }
 }
@@ -437,18 +489,11 @@ function setupGameLobbyHandlers() {
 }
 
 // ── Detail panel ────────────────────────────────────────────────────────────
-// Universal prize formula, for any player count: $2 x (playerCount - 1),
-// except 3 players shows $5 not $4. Below 3 players there's no prize yet.
-function prizeForCount(n) {
-  if (n < 3) return null;
-  if (n === 3) return 5;
-  return 2 * (n - 1);
-}
-
-function updatePrizeCounter(n) {
+// The prize comes from the server (room.prize = prize.ts's puzPrize for this
+// many players), the same function that decides what a win actually pays.
+function updatePrizeCounter(n, prize) {
   const el = document.getElementById('prize-counter');
-  const prize = prizeForCount(n);
-  el.textContent = prize === null
+  el.textContent = !prize
     ? 'Waiting for players… (min 3)'
     : n + ' players — Prize: $' + prize;
 }
@@ -457,7 +502,7 @@ function renderDetail(room) {
   document.getElementById('no-room-msg').style.display = 'none';
   document.getElementById('room-detail').classList.add('visible');
   document.getElementById('detail-title').textContent = room.name;
-  updatePrizeCounter((room.players || []).length);
+  updatePrizeCounter((room.players || []).length, room.prize);
 
   const pl = document.getElementById('player-list');
   pl.innerHTML = (room.players || []).map(p => `
@@ -579,12 +624,12 @@ function esc(s) {
 (async () => {
   const params = new URLSearchParams(location.search);
   const autoJoin = params.get('join');
-  if (!autoJoin) return;
+  if (!autoJoin || !puzAuth) return;
   const autoPw = params.get('pw') || '';
   myRoomPassword = autoPw;
   try {
     gameLobbyRoom = await colyseusClient.joinById(autoJoin, {
-      playerName: myName, color: myColor, password: autoPw,
+      playerId: puzAuth.playerId, color: myColor, password: autoPw,
     });
     mySessionId = gameLobbyRoom.sessionId;
     setupGameLobbyHandlers();
