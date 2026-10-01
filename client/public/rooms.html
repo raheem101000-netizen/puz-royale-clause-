@@ -112,6 +112,14 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
       <div class="detail" id="room-detail">
         <div id="prize-counter" style="margin:0 18px 4px;padding:10px 14px;background:rgba(255,50,50,0.08);border:1px solid rgba(255,50,50,0.25);border-radius:8px;font-size:13px;font-weight:600;text-align:center;color:#FF5555;"></div>
         <div class="player-list" id="player-list"></div>
+        <div id="room-code-box" style="display:none;margin:0 18px 12px;padding:12px 14px;background:rgba(74,184,255,0.06);border:1px solid rgba(74,184,255,0.3);border-radius:8px;">
+          <div style="font-size:10px;color:rgba(100,180,255,0.6);letter-spacing:2px;margin-bottom:6px;">ROOM CODE — friends enter it in “Join with Code”</div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span id="room-code" style="flex:1;font-size:22px;font-weight:700;letter-spacing:2px;color:#fff;font-family:monospace;user-select:all;"></span>
+            <button onclick="copyRoomCode(this)" style="background:#4ab8ff;color:#020818;border:none;border-radius:4px;padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer;">COPY CODE</button>
+          </div>
+          <div id="room-code-pass" style="display:none;font-size:11px;color:rgba(255,255,255,0.45);margin-top:6px;">Private room — friends also need the password: <span id="room-code-pw" style="color:#fff;"></span></div>
+        </div>
         <div id="share-section" style="display:none;margin:0 18px 12px;">
           <div style="font-size:10px;color:rgba(100,180,255,0.5);letter-spacing:2px;margin-bottom:8px;">INVITE FRIENDS</div>
           <div style="display:flex;gap:8px;">
@@ -160,9 +168,9 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
 <!-- Join Private Modal -->
 <div class="modal-bg" id="join-modal">
   <div class="modal">
-    <h3>JOIN PRIVATE ROOM</h3>
-    <div class="field" id="j-id-field"><label>ROOM ID</label><input id="j-id" placeholder="Paste room ID"></div>
-    <div class="field"><label>PASSWORD</label><input id="j-pass" type="password" placeholder="Enter password"></div>
+    <h3 id="j-title">JOIN WITH CODE</h3>
+    <div class="field" id="j-id-field"><label>ROOM CODE</label><input id="j-id" placeholder="Paste the room code (or invite link)" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+    <div class="field"><label id="j-pass-label">PASSWORD (PRIVATE ROOMS ONLY)</label><input id="j-pass" type="password" placeholder="Leave blank for public rooms"></div>
     <div class="error-inline" id="j-error"></div>
     <div class="modal-btns">
       <button class="btn btn-red" style="flex:1;" onclick="joinPrivate()">Join</button>
@@ -390,6 +398,9 @@ async function joinRoom(roomId) {
 function joinLockedRoom(roomId) {
   if (gameLobbyRoom) return;
   pendingLockedRoomId = roomId;
+  document.getElementById('j-title').textContent = 'JOIN PRIVATE ROOM';
+  document.getElementById('j-pass-label').textContent = 'PASSWORD';
+  document.getElementById('j-pass').placeholder = 'Enter password';
   document.getElementById('j-id-field').style.display = 'none';
   document.getElementById('j-pass').value = '';
   document.getElementById('j-error').textContent = '';
@@ -400,9 +411,17 @@ function joinLockedRoom(roomId) {
 async function joinPrivate() {
   if (!puzAuth) { showLoginGate(); return; }
   if (gameLobbyRoom) return;
-  const password = document.getElementById('j-pass').value;
-  const id = pendingLockedRoomId || document.getElementById('j-id').value.trim();
-  if (!id) { document.getElementById('j-error').textContent = 'Enter a room ID'; return; }
+  let password = document.getElementById('j-pass').value;
+  let id = pendingLockedRoomId || document.getElementById('j-id').value.trim();
+  // A pasted invite link (…/rooms?join=<code>&pw=…) works too.
+  if (!pendingLockedRoomId && /[?&]join=/.test(id)) {
+    try {
+      const q = new URL(id, location.origin).searchParams;
+      id = (q.get('join') || '').trim();
+      if (!password && q.get('pw')) password = q.get('pw');
+    } catch (_) {}
+  }
+  if (!id) { document.getElementById('j-error').textContent = 'Enter a room code'; return; }
   try {
     gameLobbyRoom = await colyseusClient.joinById(id, {
       playerId: puzAuth.playerId, color: myColor, password,
@@ -412,8 +431,9 @@ async function joinPrivate() {
     closeModals();
     setupGameLobbyHandlers();
   } catch (e) {
+    gameLobbyRoom = null;
     if (isAuthError(e)) { closeModals(); showLoginGate(e.message); return; }
-    document.getElementById('j-error').textContent = 'Wrong password or room not found';
+    document.getElementById('j-error').textContent = joinErrorText(e);
   }
 }
 
@@ -502,6 +522,10 @@ function renderDetail(room) {
   document.getElementById('no-room-msg').style.display = 'none';
   document.getElementById('room-detail').classList.add('visible');
   document.getElementById('detail-title').textContent = room.name;
+  document.getElementById('room-code').textContent = room.id;
+  document.getElementById('room-code-box').style.display = 'block';
+  document.getElementById('room-code-pass').style.display = (room.locked && myRoomPassword) ? 'block' : 'none';
+  document.getElementById('room-code-pw').textContent = myRoomPassword;
   updatePrizeCounter((room.players || []).length, room.prize);
 
   const pl = document.getElementById('player-list');
@@ -528,6 +552,8 @@ function resetDetail() {
   document.getElementById('detail-title').textContent = 'Room';
   document.getElementById('chat-box').innerHTML = '';
   document.getElementById('share-section').style.display = 'none';
+  document.getElementById('room-code-box').style.display = 'none';
+  document.getElementById('room-code').textContent = '';
   document.getElementById('room-error').textContent = '';
   document.getElementById('prize-counter').textContent = '';
 }
@@ -589,6 +615,9 @@ function openCreateModal() {
 }
 function openJoinModal() {
   pendingLockedRoomId = '';
+  document.getElementById('j-title').textContent = 'JOIN WITH CODE';
+  document.getElementById('j-pass-label').textContent = 'PASSWORD (PRIVATE ROOMS ONLY)';
+  document.getElementById('j-pass').placeholder = 'Leave blank for public rooms';
   document.getElementById('j-id-field').style.display = 'block';
   document.getElementById('j-id').value = '';
   document.getElementById('j-pass').value = '';
@@ -602,6 +631,29 @@ function closeModals() {
   document.getElementById('join-modal').classList.remove('open');
 }
 document.querySelectorAll('.modal-bg').forEach(m => m.addEventListener('click', e => { if (e.target === m) closeModals(); }));
+['j-id', 'j-pass'].forEach(id => document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') joinPrivate(); }));
+
+function copyRoomCode(btn) {
+  const code = document.getElementById('room-code').textContent;
+  navigator.clipboard.writeText(code).catch(() => {
+    const r = document.createRange(); r.selectNodeContents(document.getElementById('room-code'));
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); document.execCommand('copy');
+  });
+  btn.textContent = 'COPIED!';
+  setTimeout(() => btn.textContent = 'COPY CODE', 2000);
+}
+
+// What a failed join-by-code tells the player (server/Colyseus messages → plain words).
+function joinErrorText(e) {
+  const m = String((e && e.message) || '');
+  if (/wrong password/i.test(m)) return 'Wrong password for this room';
+  if (/already started/i.test(m)) return 'That match has already started';
+  // Colyseus locks a lobby both when it fills up and when its match starts.
+  if (/already full|is locked/i.test(m)) return 'That room is full or its match has already started';
+  if (/already in this room/i.test(m)) return "You're already in this room";
+  if (/not found/i.test(m)) return 'No room with that code — check it, or the room may have closed';
+  return 'Could not join: ' + (m || 'unknown error');
+}
 
 function copyLink() {
   const input = document.getElementById('share-link');
@@ -634,7 +686,9 @@ function esc(s) {
     mySessionId = gameLobbyRoom.sessionId;
     setupGameLobbyHandlers();
   } catch (e) {
-    showError('Failed to join: ' + (e.message || 'room not found or wrong password'));
+    gameLobbyRoom = null;
+    if (isAuthError(e)) { showLoginGate(e.message); return; }
+    showError(joinErrorText(e));
   }
 })();
 </script>
