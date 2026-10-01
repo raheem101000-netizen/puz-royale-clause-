@@ -18,14 +18,14 @@ import { pool } from "./db";
 export const PUZ_GAME = "puz";
 
 /**
- * Payout kill-switch. Real money only moves when the server's environment has
- * PUZ_PAYOUTS_ENABLED=true (exactly "true"). Unset, empty, "false" or anything
- * else = OFF: matches play and end normally, but creditPuzWin credits nothing
- * and touches no tables. Read on every call, so turning payouts on is just
- * setting the variable in Render (which restarts the service) — no code change.
+ * Payout kill-switch. Payouts are ON by default (unset = on). Setting
+ * PUZ_PAYOUTS_ENABLED=false (exactly "false") in the server's environment turns
+ * them OFF: matches play and end normally, but creditPuzWin credits nothing
+ * and touches no tables. Read on every call, so switching is just setting the
+ * variable in Render (which restarts the service) — no code change.
  */
 export function payoutsEnabled(): boolean {
-  return process.env.PUZ_PAYOUTS_ENABLED === "true";
+  return process.env.PUZ_PAYOUTS_ENABLED !== "false";
 }
 const PUZ_MATCH_NUMBER = 0; // NOT NULL in game_wins/ledger/match_results; Puz has no Pong-style cycle position
 
@@ -36,7 +36,7 @@ export function puzCreditKey(matchId: string) {
 export type CreditOutcome =
   | { status: "credited"; amount: string; balanceBefore: string; balanceAfter: string }
   | { status: "already_credited" }
-  | { status: "disabled" }; // PUZ_PAYOUTS_ENABLED is not "true" — nothing was credited
+  | { status: "disabled" }; // PUZ_PAYOUTS_ENABLED=false — nothing was credited
 
 export async function creditPuzWin(opts: {
   matchId: string;
