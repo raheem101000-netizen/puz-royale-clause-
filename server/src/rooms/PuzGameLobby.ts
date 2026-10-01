@@ -1,7 +1,7 @@
 import { Room, Client, matchMaker } from "@colyseus/core";
 import { authenticateGameToken, PuzAuth } from "../auth";
 import { issueLaunchTicket } from "../launchTickets";
-import { puzPrize } from "../prize";
+import { puzLobbyDisplayPrize } from "../prize";
 
 interface PlayerData {
   id: string;
@@ -164,7 +164,7 @@ export class PuzGameLobby extends Room {
       players: players.map(this.serializePlayer.bind(this)),
       // What a win pays if this many players start — from the server's one
       // prize formula, so the lobby can't disagree with what's paid.
-      prize: puzPrize(players.length),
+      prize: puzLobbyDisplayPrize(players.length),
     };
   }
 }
