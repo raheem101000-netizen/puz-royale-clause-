@@ -58,17 +58,7 @@ canvas#minimap{position:absolute;bottom:-36px;right:-36px;border-radius:50%;box-
     <h2 id="result-title">Eliminated</h2>
     <div id="result-place"></div>
     <div id="result-sub"></div>
-    <div id="puz-claim-form" style="display:none;text-align:center;padding:16px;width:100%;max-width:380px;font-family:system-ui;">
-      <div style="font-family:'Press Start 2P',monospace;font-size:11px;color:#ffe44d;margin-bottom:6px;">$8 PRIZE</div>
-      <div style="font-size:13px;color:rgba(255,255,255,0.65);line-height:1.6;margin-bottom:16px;">Enter your details to claim your prize. We'll send it to your PayPal within 48 hours.</div>
-      <input id="puz-name" type="text" placeholder="Full name" style="width:100%;padding:11px;margin-bottom:9px;background:#111;border:2px solid #ffe44d;color:#fff;font-size:14px;box-sizing:border-box;"/>
-      <input id="puz-paypal" type="email" placeholder="PayPal email" style="width:100%;padding:11px;margin-bottom:9px;background:#111;border:2px solid #ffe44d;color:#fff;font-size:14px;box-sizing:border-box;"/>
-      <input id="puz-contact" type="email" placeholder="Contact email" style="width:100%;padding:11px;margin-bottom:9px;background:#111;border:2px solid #ffe44d;color:#fff;font-size:14px;box-sizing:border-box;"/>
-      <textarea id="puz-notes" placeholder="No PayPal? Questions? (optional)" style="width:100%;padding:11px;margin-bottom:14px;background:#111;border:2px solid rgba(255,255,255,0.15);color:#fff;font-size:14px;box-sizing:border-box;height:68px;resize:none;"></textarea>
-      <button id="puz-claim-btn" style="width:100%;padding:13px;background:#ffe44d;color:#000;font-family:'Press Start 2P',monospace;font-size:9px;border:none;cursor:pointer;letter-spacing:1px;">► CLAIM MY PRIZE</button>
-      <div id="puz-claim-success" style="display:none;margin-top:14px;font-size:13px;color:#22ff6e;line-height:1.6;">✓ Claim received! Your prize will be sent to your PayPal within 48 hours.</div>
-      <div id="puz-claim-error" style="display:none;margin-top:10px;font-size:12px;color:#ff4757;"></div>
-    </div>
+    <div id="result-credit" style="display:none;margin:-6px 0 18px;font-size:15px;font-weight:600;text-align:center;max-width:380px;line-height:1.5;"></div>
     <button id="again" onclick="location.href='/rooms'">Back to Lobby</button>
   </div>
 </div>
@@ -106,7 +96,11 @@ let pendingInputs = [];
 const urlP = new URLSearchParams(location.search);
 const roomId = urlP.get('room') || '';
 let myId = null;
-const myName = localStorage.getItem('puz_name') || ('Player' + Math.floor(Math.random() * 1000));
+// Logged-in account from the tenten.run handoff (stored by /rooms). The server
+// takes the name from the login token; this is only for local display.
+const puzAuth = (() => { try { return JSON.parse(sessionStorage.getItem('puz_auth')) || null; } catch (_) { return null; } })();
+if (!puzAuth) location.replace('/rooms');  // not logged in → the lobby's login gate
+const myName = puzAuth ? (puzAuth.name || 'Player') : 'Player';
 const myPid = (() => { let id = localStorage.getItem('puz_pid'); if (!id) { id = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('puz_pid', id); } return id; })();
 const myColor = ['#4CFF6C','#FF4444','#FFD700','#4BA8FF','#FF8C00','#DA70D6','#00CED1','#FF69B4'][Math.floor(Math.random() * 8)];
 
@@ -429,36 +423,14 @@ socket.on('puz:end', ({ winnerId, total }) => {
   showResult(winnerId===myId ? 1 : 2, total);
 });
 
-socket.on('payout', (data) => {
-  document.getElementById('puz-claim-form').style.display = 'block';
-  document.getElementById('again').style.display = 'none';
-  document.getElementById('puz-claim-btn').onclick = async function() {
-    const name    = (document.getElementById('puz-name').value || '').trim();
-    const paypal  = (document.getElementById('puz-paypal').value || '').trim();
-    const contact = (document.getElementById('puz-contact').value || '').trim();
-    const notes   = (document.getElementById('puz-notes').value || '').trim();
-    const errEl   = document.getElementById('puz-claim-error');
-    errEl.style.display = 'none';
-    if (!name) { errEl.style.display='block'; errEl.textContent='Please enter your full name'; return; }
-    if (!paypal && !notes) { errEl.style.display='block'; errEl.textContent='Please enter your PayPal email or leave a note'; return; }
-    const btn = document.getElementById('puz-claim-btn');
-    btn.textContent = 'SUBMITTING...'; btn.disabled = true;
-    try {
-      const resp = await fetch('https://puz-royale-clause-1.onrender.com/submit-prize-claim', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ winner_name: name, paypal_email: paypal, contact_email: contact, notes, game: data.game, prize_amount: data.prize_amount })
-      });
-      const result = await resp.json();
-      if (result.success) {
-        document.getElementById('puz-claim-success').style.display = 'block';
-        btn.style.display = 'none';
-      } else { throw new Error('failed'); }
-    } catch(e) {
-      btn.textContent = '► CLAIM MY PRIZE'; btn.disabled = false;
-      errEl.style.display = 'block'; errEl.textContent = 'Something went wrong. Please try again.';
-    }
-  };
+// Auto-credit (replaces the old "claim your prize / PayPal" form): the server
+// credits the winner's tenten.run balance and tells the winner the amount.
+socket.on('puz:credit', (c) => {
+  const el = document.getElementById('result-credit');
+  if (c && c.status === 'credited') { el.textContent = 'You won! $' + c.amount + ' added to your balance'; el.style.color = '#4CFF6C'; }
+  else if (c && c.status === 'none') { el.textContent = 'No prize this time — fewer than 3 players started.'; el.style.color = 'rgba(255,255,255,.5)'; }
+  else { el.textContent = "Your prize couldn't be added automatically — it's been logged and will be credited."; el.style.color = '#FFB400'; }
+  el.style.display = 'block';
 });
 
 

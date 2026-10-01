@@ -1,10 +1,24 @@
-import { Room, Client } from "@colyseus/core";
+import { Room, Client, CloseCode } from "@colyseus/core";
+import { authenticateGameToken, PuzAuth } from "../auth";
+import { consumeLaunchTicket } from "../launchTickets";
+import { puzPrize, prizeAmountString } from "../prize";
+import { creditPuzWin, CreditOutcome } from "../payouts";
 
 // TEMPORARY SOLO-TEST MODE — mirrors the client's SOLO_TEST flag in rooms.html. Lets a
 // match that started with only 1 player actually end (broadcast puz:end) when that
 // player dies, instead of checkWinCondition() silently returning forever. Set to false
 // to restore the normal rule that a match only ends once it started with 2+ players.
-const SOLO_TEST = true;
+const SOLO_TEST = true; // gameplay only: a solo match ends, but pays nothing (prize.ts: under 3 players → $0)
+
+// How long a launched match waits for its whole lobby roster to connect before
+// starting with whoever is here. PUZ_START_DEADLINE_MS overrides it for local tests.
+const START_DEADLINE_MS = Number(process.env.PUZ_START_DEADLINE_MS) || 10_000;
+
+// What the winner's client is told about their credit.
+type CreditState =
+  | { status: 'credited'; amount: string }
+  | { status: 'none' }      // prize is $0 (fewer than 3 players started)
+  | { status: 'failed' };
 
 // ── Map configs verbatim from puz-maptest.html ────────────────────────────
 const SIZES: Record<number, [number, number, number]> = {
@@ -36,7 +50,7 @@ function mkZones(phases: number, diag: number): ZonePhase[] {
 interface Wall { x: number; y: number; w: number; h: number; }
 interface Input { up: boolean; down: boolean; left: boolean; right: boolean; angle: number; shooting: boolean; reload: boolean; }
 interface Player {
-  id: string; name: string; color: string; pid?: string;
+  id: string; userId: number; name: string; color: string; pid?: string;
   x: number; y: number; vx: number; vy: number; hp: number; maxHp: number;
   alive: boolean; connected: boolean; angle: number; speed: number; r: number;
   ammo: number; maxAmmo: number; reloading: boolean; reloadTimer: number;
@@ -141,6 +155,15 @@ export class PuzRoom extends Room {
   private placement = 0;
   private active = false;
   private startedPlayerCount = 0;
+  // Money state. roster = the lobby's accounts (the only ones who may play);
+  // prizeDollars is frozen in startGame() from the real accounts present, so
+  // later joins/leaves can't change it; everUserIds feeds the loss audit rows.
+  private roster: number[] = [];
+  private prizeDollars = 0;
+  private everUserIds = new Set<number>();
+  private ended = false;
+  private credit: CreditState | null = null;
+  private winnerUserId: number | null = null;
   private loop: ReturnType<typeof setInterval> | null = null;
   private zoneInterval: ReturnType<typeof setInterval> | null = null;
   private lastTickAt = 0; // diagnostics: detect dropped/slow ticks (expected interval 16ms)
@@ -153,13 +176,31 @@ export class PuzRoom extends Room {
   private zoneTimer = 0;
   private shrinking = false;
 
+  static async onAuth(token: string, options: any) {
+    return authenticateGameToken(token, options?.playerId);
+  }
+
   // Diagnostics: raw WS-level connect, independent of the app-level "puz:join" message.
   // Lets Render's log stream show reconnect churn even before a client re-sends puz:join.
-  onJoin(client: Client) {
-    console.log(`[PuzRoom ${this.roomId}] ws connect sessionId=${client.sessionId} clients=${this.clients.length}`);
+  onJoin(client: Client, _options: any, auth: PuzAuth) {
+    if (!this.roster.includes(auth.userId)) {
+      throw new Error("You're not a player in this match");
+    }
+    console.log(`[PuzRoom ${this.roomId}] ws connect sessionId=${client.sessionId} user=${auth.userId} clients=${this.clients.length}`);
   }
 
   async onCreate(options: any) {
+    // Only PuzGameLobby may start a match room (see launchTickets.ts).
+    if (!consumeLaunchTicket(options?.launchTicket)) {
+      throw new Error("Matches can only be started from a lobby");
+    }
+    const roster = Array.isArray(options?.rosterUserIds) ? options.rosterUserIds : [];
+    if (!roster.length || roster.length > 16 || new Set(roster).size !== roster.length || !roster.every((n: unknown) => Number.isInteger(n))) {
+      throw new Error("Invalid match roster");
+    }
+    this.roster = roster;
+    this.clock.setTimeout(() => this.maybeStart(true), START_DEADLINE_MS);
+
     const playerCount = Math.min(16, Math.max(2, parseInt(options?.mapSize) || 8));
     const cfg = SIZES[playerCount] || SIZES[8];
     this.WW = cfg[0]; this.WH = cfg[1]; this.TILE = cfg[2];
@@ -175,13 +216,14 @@ export class PuzRoom extends Room {
     this.onMessage("puz:join", (client: Client, data: {name?:string;color?:string;pid?:string}) => {
       if (this.players[client.sessionId]) return;
 
-      const name = (data.name || 'Player').slice(0, 24);
+      // Identity comes from the login token (onAuth), never from the client:
+      // the account's display name, and the account itself for rejoins.
+      const auth = client.auth as PuzAuth;
+      const name = (auth.displayName || 'Player').slice(0, 24);
       const pid = data.pid || '';
 
-      // Reconnect: match by persistent player ID (pid) first, then fall back to name.
-      const dupId = pid
-        ? Object.keys(this.players).find(id => this.players[id].pid === pid)
-        : Object.keys(this.players).find(id => this.players[id].name === name);
+      // Reconnect / second tab: the same account takes its existing player over.
+      const dupId = Object.keys(this.players).find(id => this.players[id].userId === auth.userId);
       if (dupId) {
         console.log(`[PuzRoom ${this.roomId}] app-level rejoin name="${name}" oldSessionId=${dupId} newSessionId=${client.sessionId}`);
         const existing = this.players[dupId];
@@ -199,12 +241,15 @@ export class PuzRoom extends Room {
           players: allPlayers.map(p => ({id:p.id,name:p.name,color:p.color})),
           hostId: allPlayers[0]?.id || client.sessionId
         });
+        if (this.ended && this.credit && auth.userId === this.winnerUserId) client.send('puz:credit', this.credit);
         return;
       }
+      if (this.ended) return; // match is over; nobody new joins a finished game
 
       const pos = spawnPos(this.WW, this.WH, this.zoneX, this.zoneY, this.zoneR, this.walls);
       this.players[client.sessionId] = {
         id: client.sessionId,
+        userId: auth.userId,
         name,
         color: data.color || '#4CFF6C',
         pid,
@@ -219,6 +264,7 @@ export class PuzRoom extends Room {
         input: {up:false,down:false,left:false,right:false,angle:0,shooting:false,reload:false}
       };
       this.aliveCount++;
+      this.everUserIds.add(auth.userId);
 
       if (this.active) {
         client.send('puz:started', {
@@ -233,11 +279,14 @@ export class PuzRoom extends Room {
         players: allPlayers.map(p => ({id:p.id,name:p.name,color:p.color})),
         hostId
       });
+      this.maybeStart(false);
     });
 
+    // Clients still send puz:start ~700ms after connecting; it no longer starts
+    // the match on its own (that let the first arrival start it alone and
+    // undercounted the players the prize is based on). See maybeStart().
     this.onMessage("puz:start", (_client: Client) => {
-      if (this.active) return;
-      this.startGame();
+      this.maybeStart(false);
     });
 
     this.onMessage("puz:input", (client: Client, data: {input:Input; seq?: number}) => {
@@ -253,8 +302,10 @@ export class PuzRoom extends Room {
     console.log(`[PuzRoom ${this.roomId}] ws disconnect sessionId=${client.sessionId} code=${code} name=${p?.name ?? '?'}`);
     if (!p) return;
 
-    // code 1000 = normal closure (client called room.leave()) — remove immediately.
-    if (code === 1000) {
+    // Deliberate leave (client called room.leave()) — remove immediately. In
+    // Colyseus 0.17 that arrives as CloseCode.CONSENTED (4000), not 1000, so
+    // quitters were being held for the 20 s reconnect grace below.
+    if (code === 1000 || code === CloseCode.CONSENTED) {
       this.removePlayer(client.sessionId);
       return;
     }
@@ -286,12 +337,26 @@ export class PuzRoom extends Room {
     this.checkWinCondition();
   }
 
+  // Start once every account on the lobby roster has joined, or at the deadline
+  // with whoever is here.
+  private maybeStart(deadlinePassed: boolean) {
+    if (this.active || this.ended) return;
+    const present = new Set(Object.values(this.players).map(p => p.userId));
+    if (present.size === 0) return;
+    if (deadlinePassed || this.roster.every(id => present.has(id))) this.startGame();
+  }
+
   private startGame() {
-    this.startedPlayerCount = this.aliveCount;
+    // The prize is frozen here, from the real accounts that started — later
+    // joins/leaves never change it.
+    this.startedPlayerCount = new Set(Object.values(this.players).filter(p => p.alive).map(p => p.userId)).size;
+    this.prizeDollars = puzPrize(this.startedPlayerCount);
+    console.log(`[PuzRoom ${this.roomId}] started with ${this.startedPlayerCount} players — prize $${prizeAmountString(this.prizeDollars)}`);
     this.active = true;
     this.broadcast('puz:started', {
       walls: this.walls, WW: this.WW, WH: this.WH, TILE: this.TILE,
-      zoneX: this.zoneX, zoneY: this.zoneY, zoneR: this.zoneR
+      zoneX: this.zoneX, zoneY: this.zoneY, zoneR: this.zoneR,
+      prize: this.prizeDollars,
     });
     this.startZone();
     this.loop = setInterval(() => this.puzTick(), 16);
@@ -371,20 +436,51 @@ export class PuzRoom extends Room {
     if (this.startedPlayerCount < 2 && !SOLO_TEST) return;
     const alive = Object.values(this.players).filter(p => p.alive);
     if (alive.length <= 1) {
+      this.ended = true;
       this.broadcast('puz:end', {
         winnerId: alive[0]?.id || null,
         winnerName: alive[0]?.name || null,
-        total: Object.keys(this.players).length + this.placement
+        total: Object.keys(this.players).length + this.placement,
+        prize: this.prizeDollars,
       });
-      // Notify winner to submit prize claim
-      if (alive[0]) {
-        const winnerClient = this.clients.find(c => c.sessionId === alive[0].id);
-        if (winnerClient) {
-          winnerClient.send('payout', { prize_amount: '$8', game: 'Puz Royale Multiplayer' });
-        }
-      }
       this.stopGame();
+      // Auto-credit replaces the old "claim your prize / PayPal" flow.
+      if (alive[0]) void this.creditWinner(alive[0]);
     }
+  }
+
+  private async creditWinner(winner: Player) {
+    this.winnerUserId = winner.userId;
+    if (this.prizeDollars <= 0) {
+      this.credit = { status: 'none' };
+    } else {
+      const losers = [...this.everUserIds].filter(id => id !== winner.userId);
+      this.credit = await this.creditWithRetry(winner.userId, losers);
+    }
+    // winner.id tracks the current session even across a rejoin.
+    const winnerClient = this.clients.find(c => c.sessionId === winner.id);
+    if (winnerClient) winnerClient.send('puz:credit', this.credit);
+  }
+
+  private async creditWithRetry(winnerUserId: number, loserUserIds: number[]): Promise<CreditState> {
+    const amount = prizeAmountString(this.prizeDollars);
+    const delays = [0, 1000, 3000];
+    for (let i = 0; i < delays.length; i++) {
+      if (delays[i]) await new Promise(r => setTimeout(r, delays[i]));
+      try {
+        const out: CreditOutcome = await creditPuzWin({
+          matchId: this.roomId, winnerUserId, loserUserIds, amount, startedPlayers: this.startedPlayerCount,
+        });
+        console.log(`[puz-credit] match ${this.roomId} → user ${winnerUserId}: ${out.status}` +
+          (out.status === 'credited' ? ` $${out.amount} (${out.balanceBefore} → ${out.balanceAfter})` : ''));
+        return { status: 'credited', amount }; // 'already_credited' means the money is already there
+      } catch (e) {
+        console.error(`[puz-credit] attempt ${i + 1} failed for match ${this.roomId} → user ${winnerUserId}:`, e);
+      }
+    }
+    // Safe to retry later: the 'puz:<matchId>' key means a manual re-run can never double-credit.
+    console.error(`[puz-credit] GAVE UP — match ${this.roomId}, winner user ${winnerUserId} is owed $${amount}`);
+    return { status: 'failed' };
   }
 
   private puzTick() {

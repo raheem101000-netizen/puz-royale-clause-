@@ -104,8 +104,8 @@
 
     function reconnect() {
       if (!_roomId) return;
-      var client = new Colyseus.Client(serverURL);
-      client.joinById(_roomId)
+      var c = authedClient();
+      c.client.joinById(_roomId, c.opts)
         .then(function (room) {
           _attempts++;
           attach(room);
@@ -114,15 +114,26 @@
         .catch(function () { setTimeout(reconnect, 3000); });
     }
 
-    whenReady(function () {
+    // tenten.run login (stored by /rooms from the handoff): the server's onAuth
+    // turns this token into the player's real account.
+    function authedClient() {
       var client = new Colyseus.Client(serverURL);
+      try {
+        var a = JSON.parse(sessionStorage.getItem('puz_auth'));
+        if (a && a.token) { client.auth.token = a.token; return { client: client, opts: { playerId: a.playerId } }; }
+      } catch (e) {}
+      return { client: client, opts: {} };
+    }
+
+    whenReady(function () {
+      var c = authedClient(), client = c.client;
       var promise;
       if (isGame && roomIdFromURL) {
-        promise = client.joinById(roomIdFromURL);
+        promise = client.joinById(roomIdFromURL, c.opts);
       } else if (isGame) {
-        promise = client.create('puz_room');
+        promise = Promise.reject(new Error('Matches can only be started from a lobby'));
       } else {
-        promise = client.joinOrCreate('puz_lobby');
+        promise = client.joinOrCreate('puz_lobby', c.opts);
       }
       promise.then(attach).catch(function (e) {
         console.error('[colyseus-adapter] connect failed', e);

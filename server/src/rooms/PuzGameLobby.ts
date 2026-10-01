@@ -1,7 +1,11 @@
 import { Room, Client, matchMaker } from "@colyseus/core";
+import { authenticateGameToken, PuzAuth } from "../auth";
+import { issueLaunchTicket } from "../launchTickets";
+import { puzPrize } from "../prize";
 
 interface PlayerData {
   id: string;
+  userId: number; // real tenten.run account (from the login handoff token)
   name: string;
   color: string;
   ready: boolean;
@@ -15,6 +19,12 @@ export class PuzGameLobby extends Room {
   private lobbyName: string = '';
   private lobbyLocked: boolean = false;
   private lobbyPassword: string | null = null;
+
+  // Runs during matchmaking, before any seat is reserved, so a player who
+  // isn't logged in on tenten.run never gets a lobby created or joined.
+  static async onAuth(token: string, options: any) {
+    return authenticateGameToken(token, options?.playerId);
+  }
 
   async onCreate(options: any) {
     this.lobbyName = options.name || 'Room';
@@ -50,7 +60,13 @@ export class PuzGameLobby extends Room {
       }
       try {
         const mapSize = Math.min(16, Math.max(2, parseInt(data?.mapSize) || 8));
-        const gameRoom = await matchMaker.createRoom("puz_room", { mapSize });
+        const gameRoom = await matchMaker.createRoom("puz_room", {
+          mapSize,
+          launchTicket: issueLaunchTicket(), // proves this room came from a lobby, not a client
+          // The accounts in this lobby at launch: the only ones who may play the
+          // match, and what its start waits for (see PuzRoom.maybeStart).
+          rosterUserIds: [...new Set(players.map(pp => pp.userId))],
+        });
         // Remove from lobby listing immediately (belt+suspenders: both setPrivate
         // and metadata open:false, since setPrivate alone may not update existing
         // LobbyRoom connections in all Colyseus 0.17 builds).
@@ -85,15 +101,20 @@ export class PuzGameLobby extends Room {
     });
   }
 
-  async onJoin(client: Client, options: any) {
+  async onJoin(client: Client, options: any, auth: PuzAuth) {
     if (this.lobbyPassword && options.password !== this.lobbyPassword) {
       throw new Error("Wrong password");
+    }
+    // One account, one seat (checked and claimed before any await).
+    if (Object.values(this.lobbyPlayers).some(p => p.userId === auth.userId)) {
+      throw new Error("You're already in this room");
     }
 
     const isMaster = Object.keys(this.lobbyPlayers).length === 0;
     const pd: PlayerData = {
       id: client.sessionId,
-      name: options.playerName || 'Player',
+      userId: auth.userId,
+      name: auth.displayName,
       color: options.color || '#4CFF6C',
       ready: false,
       master: isMaster,
@@ -141,6 +162,9 @@ export class PuzGameLobby extends Room {
       locked: this.lobbyLocked,
       master: players.find(p => p.master)?.id || '',
       players: players.map(this.serializePlayer.bind(this)),
+      // What a win pays if this many players start — from the server's one
+      // prize formula, so the lobby can't disagree with what's paid.
+      prize: puzPrize(players.length),
     };
   }
 }
