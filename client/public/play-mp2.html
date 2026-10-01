@@ -32,6 +32,8 @@ canvas#minimap{position:absolute;bottom:-36px;right:-36px;border-radius:50%;box-
 #result-place{font-size:46px;font-weight:700;margin:6px 0;}
 #result-sub{color:rgba(255,255,255,.4);font-size:13px;margin-bottom:18px;}
 #again{background:#4CFF6C;color:#04210d;border:none;border-radius:6px;padding:11px 26px;font-size:14px;font-weight:600;cursor:pointer;}
+.tenten-back-btn{display:inline-block;margin-top:10px;font-family:'Space Grotesk',sans-serif;font-size:13px;letter-spacing:1px;color:rgba(255,255,255,0.6);text-decoration:none;border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:8px 18px;}
+.tenten-back-btn:hover{color:#fff;border-color:rgba(255,255,255,0.5);}
 </style>
 </head>
 <body>
@@ -53,6 +55,7 @@ canvas#minimap{position:absolute;bottom:-36px;right:-36px;border-radius:50%;box-
     <h2>Waiting for players…</h2>
     <div id="wait-list"></div>
     <div id="wait-status">Connecting…</div>
+    <a id="tenten-back-wait" class="tenten-back-btn" href="https://tenten.run/">← TENTEN</a>
   </div>
   <div id="result">
     <h2 id="result-title">Eliminated</h2>
@@ -60,6 +63,7 @@ canvas#minimap{position:absolute;bottom:-36px;right:-36px;border-radius:50%;box-
     <div id="result-sub"></div>
     <div id="result-credit" style="display:none;margin:-6px 0 18px;font-size:15px;font-weight:600;text-align:center;max-width:380px;line-height:1.5;"></div>
     <button id="again" onclick="location.href='/rooms'">Back to Lobby</button>
+    <a id="tenten-back-result" class="tenten-back-btn" href="https://tenten.run/">← TENTEN</a>
   </div>
 </div>
 

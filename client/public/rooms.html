@@ -10,6 +10,8 @@
 body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-height:100vh;}
 .page{max-width:1000px;margin:0 auto;padding:24px;}
 .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;}
+.tenten-back{font-family:'Space Grotesk',sans-serif;font-size:13px;letter-spacing:1px;color:rgba(255,255,255,0.6);text-decoration:none;margin-right:14px;white-space:nowrap;}
+.tenten-back:hover{color:#fff;}
 .logo{font-family:'Press Start 2P',monospace;font-size:14px;color:#FF3232;text-shadow:2px 2px 0 #7a0000;text-decoration:none;}
 .header-right{display:flex;gap:10px;align-items:center;}
 .name-input{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:8px 14px;color:#fff;font-size:13px;font-family:'Space Grotesk',sans-serif;outline:none;width:160px;}
@@ -84,7 +86,7 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
 <body>
 <div class="page">
   <div class="header">
-    <a class="logo" href="/">PUZ ROYALE</a>
+    <div style="display:flex;align-items:center;"><a class="tenten-back" id="tenten-back" href="https://tenten.run/">← TENTEN</a><a class="logo" href="https://tenten.run/">PUZ ROYALE</a></div>
     <div class="header-right">
       <span class="account-chip hidden" id="account-name"></span>
       <button class="btn btn-red btn-sm" onclick="openJoinModal()">Join with Code</button>
@@ -652,6 +654,9 @@ function joinErrorText(e) {
   if (/already full|is locked/i.test(m)) return 'That room is full or its match has already started';
   if (/already in this room/i.test(m)) return "You're already in this room";
   if (/not found/i.test(m)) return 'No room with that code — check it, or the room may have closed';
+  // On the live site Cloudflare replaces the body of Colyseus's 522 ("room not
+  // found / locked / full") with its own text, so only the status survives.
+  if (e && e.code === 522) return 'No room with that code, or it is full or its match has already started';
   return 'Could not join: ' + (m || 'unknown error');
 }
 
