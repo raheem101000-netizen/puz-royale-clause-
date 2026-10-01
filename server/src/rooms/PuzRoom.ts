@@ -11,8 +11,12 @@ import { creditPuzWin, CreditOutcome } from "../payouts";
 const SOLO_TEST = true; // gameplay only: a solo match ends, but pays nothing (prize.ts: under 3 players → $0)
 
 // How long a launched match waits for its whole lobby roster to connect before
-// starting with whoever is here. PUZ_START_DEADLINE_MS overrides it for local tests.
-const START_DEADLINE_MS = Number(process.env.PUZ_START_DEADLINE_MS) || 10_000;
+// starting with whoever is here. It starts the moment everyone is in; this is
+// only the fallback for a device that never arrives. Generous on purpose: a
+// phone has to sit through the lobby countdown, load the page and the SDK, and
+// connect — 10 s left slow phones out (match started without them, prize
+// undercounted). PUZ_START_DEADLINE_MS overrides it for local tests.
+const START_DEADLINE_MS = Number(process.env.PUZ_START_DEADLINE_MS) || 45_000;
 
 // What the winner's client is told about their credit.
 type CreditState =
@@ -205,7 +209,10 @@ export class PuzRoom extends Room {
     const playerCount = Math.min(16, Math.max(2, parseInt(options?.mapSize) || 8));
     const cfg = SIZES[playerCount] || SIZES[8];
     this.WW = cfg[0]; this.WH = cfg[1]; this.TILE = cfg[2];
-    this.maxClients = playerCount;
+    // Seats = everyone on the lobby roster. The host's map size only sets the
+    // arena dimensions: it used to also cap the seats, so picking "2p" for a
+    // 3-player lobby locked the third device out of its own match.
+    this.maxClients = this.roster.length;
 
     const diag = Math.sqrt(this.WW*this.WW + this.WH*this.WH);
     this.zoneX = this.WW/2; this.zoneY = this.WH/2;
