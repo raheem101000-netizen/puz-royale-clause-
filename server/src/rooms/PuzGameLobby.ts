@@ -19,6 +19,11 @@ export class PuzGameLobby extends Room {
   private lobbyName: string = '';
   private lobbyLocked: boolean = false;
   private lobbyPassword: string | null = null;
+  // Set when the host presses Start: from then on the room code stops working
+  // (lock() makes the matchmaker refuse joinById; onJoin also checks this for
+  // a join already in flight). A full lobby (maxClients) is refused by
+  // Colyseus itself.
+  private launched = false;
 
   // Runs during matchmaking, before any seat is reserved, so a player who
   // isn't logged in on tenten.run never gets a lobby created or joined.
@@ -58,6 +63,9 @@ export class PuzGameLobby extends Room {
         client.send('room:error', { message: 'Need at least 1 ready player' });
         return;
       }
+      if (this.launched) return;
+      this.launched = true;
+      await this.lock();
       try {
         const mapSize = Math.min(16, Math.max(2, parseInt(data?.mapSize) || 8));
         const gameRoom = await matchMaker.createRoom("puz_room", {
@@ -84,6 +92,8 @@ export class PuzGameLobby extends Room {
           }, 300);
         }, 3000);
       } catch (e) {
+        this.launched = false;
+        await this.unlock();
         client.send('room:error', { message: 'Failed to start game' });
       }
     });
@@ -102,6 +112,9 @@ export class PuzGameLobby extends Room {
   }
 
   async onJoin(client: Client, options: any, auth: PuzAuth) {
+    if (this.launched) {
+      throw new Error("This match has already started");
+    }
     if (this.lobbyPassword && options.password !== this.lobbyPassword) {
       throw new Error("Wrong password");
     }
