@@ -429,6 +429,7 @@ socket.on('puz:credit', (c) => {
   const el = document.getElementById('result-credit');
   if (c && c.status === 'credited') { el.textContent = 'You won! $' + c.amount + ' added to your balance'; el.style.color = '#4CFF6C'; }
   else if (c && c.status === 'none') { el.textContent = 'No prize this time — fewer than 3 players started.'; el.style.color = 'rgba(255,255,255,.5)'; }
+  else if (c && c.status === 'disabled') { el.textContent = "Cash prizes aren't live yet — no balance was credited for this win."; el.style.color = 'rgba(255,255,255,.6)'; }
   else { el.textContent = "Your prize couldn't be added automatically — it's been logged and will be credited."; el.style.color = '#FFB400'; }
   el.style.display = 'block';
 });

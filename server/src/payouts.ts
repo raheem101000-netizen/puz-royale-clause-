@@ -16,6 +16,17 @@ import { pool } from "./db";
  * accounts that started) — passed in as dollars, written as an exact numeric.
  */
 export const PUZ_GAME = "puz";
+
+/**
+ * Payout kill-switch. Real money only moves when the server's environment has
+ * PUZ_PAYOUTS_ENABLED=true (exactly "true"). Unset, empty, "false" or anything
+ * else = OFF: matches play and end normally, but creditPuzWin credits nothing
+ * and touches no tables. Read on every call, so turning payouts on is just
+ * setting the variable in Render (which restarts the service) — no code change.
+ */
+export function payoutsEnabled(): boolean {
+  return process.env.PUZ_PAYOUTS_ENABLED === "true";
+}
 const PUZ_MATCH_NUMBER = 0; // NOT NULL in game_wins/ledger/match_results; Puz has no Pong-style cycle position
 
 export function puzCreditKey(matchId: string) {
@@ -24,7 +35,8 @@ export function puzCreditKey(matchId: string) {
 
 export type CreditOutcome =
   | { status: "credited"; amount: string; balanceBefore: string; balanceAfter: string }
-  | { status: "already_credited" };
+  | { status: "already_credited" }
+  | { status: "disabled" }; // PUZ_PAYOUTS_ENABLED is not "true" — nothing was credited
 
 export async function creditPuzWin(opts: {
   matchId: string;
@@ -33,6 +45,9 @@ export async function creditPuzWin(opts: {
   amount: string;        // dollars, e.g. "18.00" — the frozen prize
   startedPlayers: number;
 }): Promise<CreditOutcome> {
+  // The one gate in front of all Puz money. Off → no-op, before any DB access.
+  if (!payoutsEnabled()) return { status: "disabled" };
+
   const key = puzCreditKey(opts.matchId);
   const tier = `${opts.startedPlayers}P`;
   const client = await pool.connect();
