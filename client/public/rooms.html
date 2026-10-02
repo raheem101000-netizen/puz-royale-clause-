@@ -43,6 +43,8 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
 .tag-host{background:rgba(255,180,0,0.12);color:#FFB400;border:1px solid rgba(255,180,0,0.25);}
 .kick-btn{margin-left:auto;background:none;border:1px solid rgba(255,85,85,0.35);color:#ff6b6b;border-radius:6px;width:24px;height:24px;line-height:20px;font-size:12px;cursor:pointer;padding:0;}
 .kick-btn:hover{background:rgba(255,85,85,0.15);}
+.room-notice{margin:0 18px 12px;font-size:11px;line-height:1.5;color:rgba(255,255,255,0.4);}
+.conn-notice{display:none;margin:0 18px 4px;padding:8px 12px;border-radius:8px;font-size:12px;font-weight:600;background:rgba(255,180,0,0.1);border:1px solid rgba(255,180,0,0.35);color:#FFB400;}
 .tag-waiting{background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.35);}
 .chat-box{height:140px;overflow-y:auto;padding:10px 18px;display:flex;flex-direction:column;gap:6px;border-top:1px solid rgba(255,255,255,0.07);}
 .chat-msg{font-size:12px;line-height:1.4;}
@@ -115,7 +117,9 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
       </div>
       <div class="detail" id="room-detail">
         <div id="prize-counter" style="margin:0 18px 4px;padding:10px 14px;background:rgba(255,50,50,0.08);border:1px solid rgba(255,50,50,0.25);border-radius:8px;font-size:13px;font-weight:600;text-align:center;color:#FF5555;"></div>
+        <div class="conn-notice" id="conn-notice"></div>
         <div class="player-list" id="player-list"></div>
+        <div class="room-notice">Rooms stay open about 10 minutes. If no one joins — or you step away and come back — your room may still be here; if it's closed, just create a new one.</div>
         <div id="room-code-box" style="display:none;margin:0 18px 12px;padding:12px 14px;background:rgba(74,184,255,0.06);border:1px solid rgba(74,184,255,0.3);border-radius:8px;">
           <div style="font-size:10px;color:rgba(100,180,255,0.6);letter-spacing:2px;margin-bottom:6px;">ROOM CODE — friends enter it in “Join with Code”</div>
           <div style="display:flex;align-items:center;gap:10px;">
@@ -509,14 +513,19 @@ function setupGameLobbyHandlers() {
     gameLobbyRoom = null;
     try { room.leave(); } catch (_) {}
     resetDetail();
-    showError(message || 'You were removed by the host');
+    showLobbyMessage(message || 'You were removed by the host');
   });
 
-  room.onLeave(() => {
-    if (gameLobbyRoom === room) {
-      gameLobbyRoom = null;
-      resetDetail();
-    }
+  // Let the SDK's own quick retries run only ~3 s; then our resume (below)
+  // takes over — it also learns at once when the seat has expired.
+  if (room.reconnection) room.reconnection.maxRetries = 4;
+  // Connection dropped: the SDK is retrying; if it gives up, we take over.
+  if (room.onDrop) room.onDrop(() => { if (gameLobbyRoom === room) setConnNotice('Connection lost — reconnecting…'); });
+  if (room.onReconnect) room.onReconnect(() => { if (gameLobbyRoom === room) setConnNotice(''); });
+  room.onLeave((code) => {
+    if (gameLobbyRoom !== room) return;            // we left on purpose (leave, kick, match start)
+    if (code === 4000 || code === 1000) { gameLobbyRoom = null; resetDetail(); return; }
+    resumeLobby(room.reconnectionToken);
   });
 }
 
@@ -532,6 +541,7 @@ function updatePrizeCounter(n, prize) {
 
 function renderDetail(room) {
   document.getElementById('no-room-msg').style.display = 'none';
+  document.getElementById('no-room-msg').textContent = 'Join or create a room to start';
   document.getElementById('room-detail').classList.add('visible');
   document.getElementById('detail-title').textContent = room.name;
   document.getElementById('room-code').textContent = room.id;
@@ -573,6 +583,62 @@ function resetDetail() {
   document.getElementById('room-error').textContent = '';
   document.getElementById('prize-counter').textContent = '';
 }
+
+
+// ── Reconnecting after a drop (phone in the background, network blip) ───────
+// The server keeps a dropped player's seat for 12 minutes. The SDK retries on
+// its own for about a minute; after that we keep trying to resume the SAME
+// session — every few seconds and as soon as the tab is back in front — until
+// the 12 minutes are up. If the room is gone, say so and go back to the list
+// (never leave a dead room on screen).
+const LOBBY_RECONNECT_MS = 12 * 60 * 1000;
+// Closing or leaving the page is a real leave (frees the seat now), unlike a
+// phone switching apps, which only hides the page and keeps the 12-minute hold.
+window.addEventListener('pagehide', () => { if (gameLobbyRoom) { try { gameLobbyRoom.leave(true); } catch (_) {} } });
+let lobbyResume = null;
+function setConnNotice(text) {
+  const el = document.getElementById('conn-notice');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.display = text ? 'block' : 'none';
+}
+function resumeLobby(token) {
+  if (!token) return giveUpLobby();
+  lobbyResume = { token, until: Date.now() + LOBBY_RECONNECT_MS, busy: false, timer: null };
+  setConnNotice('Connection lost — reconnecting…');
+  tryResumeLobby();
+}
+async function tryResumeLobby() {
+  const r = lobbyResume;
+  if (!r || r.busy) return;
+  if (Date.now() > r.until) return giveUpLobby();
+  r.busy = true;
+  try {
+    const room = await colyseusClient.reconnect(r.token);
+    if (lobbyResume !== r) { try { room.leave(); } catch (_) {} return; }
+    lobbyResume = null;
+    gameLobbyRoom = room;
+    mySessionId = room.sessionId;
+    setConnNotice('');
+    setupGameLobbyHandlers();
+    
+  } catch (e) {
+    r.busy = false;
+    // Room or seat gone (522/524 also arrive message-less through Cloudflare).
+    if (e && (e.code === 522 || e.code === 524 || /expired|not found|invalid/i.test(e.message || ''))) return giveUpLobby();
+    r.timer = setTimeout(tryResumeLobby, 5000);
+  }
+}
+function giveUpLobby() {
+  if (lobbyResume) clearTimeout(lobbyResume.timer);
+  lobbyResume = null;
+  setConnNotice('');
+  gameLobbyRoom = null;
+  resetDetail();
+  showLobbyMessage('Connection lost — your room may have closed. Rejoin with its room code, or create a new one.');
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && lobbyResume) { clearTimeout(lobbyResume.timer); tryResumeLobby(); } });
+window.addEventListener('online', () => { if (lobbyResume) { clearTimeout(lobbyResume.timer); tryResumeLobby(); } });
 
 function updateReadyBtn() {
   const btn = document.getElementById('ready-btn');
@@ -693,6 +759,13 @@ function copyLink() {
   const btn = event.target;
   btn.textContent = 'COPIED!';
   setTimeout(() => btn.textContent = 'COPY', 2000);
+}
+
+// Message for a player who is no longer in a room (the room panel, and its
+// #room-error, are hidden then), shown in the "Join or create a room" area.
+function showLobbyMessage(msg) {
+  const el = document.getElementById('no-room-msg');
+  el.innerHTML = '<div style="color:#FFB400;font-weight:600;margin-bottom:8px;">' + esc(msg) + '</div>Join or create a room to start';
 }
 
 function showError(msg) {

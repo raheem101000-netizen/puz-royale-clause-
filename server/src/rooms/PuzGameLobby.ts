@@ -3,6 +3,10 @@ import { authenticateGameToken, PuzAuth } from "../auth";
 import { issueLaunchTicket } from "../launchTickets";
 import { puzLobbyDisplayPrize } from "../prize";
 
+// How long a dropped player's seat is held (12 minutes; LOBBY_RECONNECT_SECONDS
+// overrides it for tests only).
+const LOBBY_RECONNECT_SECONDS = Number(process.env.LOBBY_RECONNECT_SECONDS) || 12 * 60;
+
 interface PlayerData {
   id: string;
   userId: number; // real tenten.run account (from the login handoff token)
@@ -163,6 +167,22 @@ export class PuzGameLobby extends Room {
       this.broadcast('room:player:join', { player: this.serializePlayer(pd) }, { except: client });
       this.broadcast('room:state', this.serializeRoom());
     }
+  }
+
+  // Reconnection grace: a player whose connection drops (phone put in the
+  // background, network blip) keeps their seat, ready state and place in the
+  // room for LOBBY_RECONNECT_SECONDS; the client SDK resumes the SAME session,
+  // so nobody sees them "leave". If they don't come back in time, onLeave runs
+  // as for a normal leave. A consented leave (closing the page, the host's
+  // kick) skips this and goes straight to onLeave.
+  onDrop(client: Client) {
+    const held: any = this.allowReconnection(client, LOBBY_RECONNECT_SECONDS);
+    held?.catch?.(() => {});
+  }
+
+  // Back after a drop: resend the current lobby (anything broadcast while away).
+  onReconnect(client: Client) {
+    client.send('room:state', this.serializeRoom());
   }
 
   async onLeave(client: Client, _code?: number) {
