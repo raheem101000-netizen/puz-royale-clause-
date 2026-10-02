@@ -41,6 +41,8 @@ body{font-family:'Space Grotesk',sans-serif;background:#080808;color:#fff;min-he
 .player-tag{font-size:11px;padding:2px 8px;border-radius:10px;}
 .tag-ready{background:rgba(76,255,108,0.15);color:#4CFF6C;border:1px solid rgba(76,255,108,0.3);}
 .tag-host{background:rgba(255,180,0,0.12);color:#FFB400;border:1px solid rgba(255,180,0,0.25);}
+.kick-btn{margin-left:auto;background:none;border:1px solid rgba(255,85,85,0.35);color:#ff6b6b;border-radius:6px;width:24px;height:24px;line-height:20px;font-size:12px;cursor:pointer;padding:0;}
+.kick-btn:hover{background:rgba(255,85,85,0.15);}
 .tag-waiting{background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.35);}
 .chat-box{height:140px;overflow-y:auto;padding:10px 18px;display:flex;flex-direction:column;gap:6px;border-top:1px solid rgba(255,255,255,0.07);}
 .chat-msg{font-size:12px;line-height:1.4;}
@@ -502,6 +504,14 @@ function setupGameLobbyHandlers() {
 
   room.onMessage('room:error', ({ message }) => showError(message));
 
+  // The host removed us: back to the room list with the reason.
+  room.onMessage('room:kicked', ({ message }) => {
+    gameLobbyRoom = null;
+    try { room.leave(); } catch (_) {}
+    resetDetail();
+    showError(message || 'You were removed by the host');
+  });
+
   room.onLeave(() => {
     if (gameLobbyRoom === room) {
       gameLobbyRoom = null;
@@ -531,17 +541,21 @@ function renderDetail(room) {
   updatePrizeCounter((room.players || []).length, room.prize);
 
   const pl = document.getElementById('player-list');
+  lastRoomData = room;
+  isMaster = room.master === mySessionId;
+  // Host: HOST tag (no ready needed). Others: READY / not ready. The host
+  // sees ✕ to remove each other player.
   pl.innerHTML = (room.players || []).map(p => `
     <div class="player-row">
       <div class="player-dot" style="background:${p.color}"></div>
       <div class="player-name">${esc(p.name)}</div>
-      ${p.master ? '<span class="player-tag tag-host">HOST</span>' : ''}
-      ${p.ready ? '<span class="player-tag tag-ready">✓ READY</span>' : '<span class="player-tag tag-waiting">waiting</span>'}
+      ${p.master ? '<span class="player-tag tag-host">HOST</span>'
+        : (p.ready ? '<span class="player-tag tag-ready">✓ READY</span>' : '<span class="player-tag tag-waiting">not ready</span>')}
+      ${isMaster && !p.master ? `<button class="kick-btn" title="Remove from room" onclick="kickPlayer('${esc(p.id)}')">✕</button>` : ''}
     </div>
   `).join('');
 
   const readyCount = (room.players || []).filter(p => p.ready).length;
-  isMaster = room.master === mySessionId;
   updateReadyBtn();
   updateStartBtn(readyCount, (room.players || []).length);
 }
@@ -562,6 +576,7 @@ function resetDetail() {
 
 function updateReadyBtn() {
   const btn = document.getElementById('ready-btn');
+  btn.style.display = isMaster ? 'none' : '';   // the host starts instead of readying
   if (isReady) {
     btn.textContent = '✓ Ready!'; btn.classList.add('active'); btn.disabled = true;
   } else {
@@ -569,14 +584,25 @@ function updateReadyBtn() {
   }
 }
 
-function updateStartBtn(readyCount, playerCount) {
+let lastRoomData = null;
+// Host: ▶ Start enabled once a map is picked and every OTHER player has
+// pressed Ready (the server enforces the same rule).
+function updateStartBtn() {
   const btn = document.getElementById('start-btn');
   btn.classList.toggle('visible', isMaster);
   document.getElementById('map-size-row').style.display = isMaster ? 'block' : 'none';
   if (isMaster) {
+    const players = (lastRoomData && lastRoomData.players) || [];
+    const othersReady = players.filter(p => !p.master).every(p => p.ready);
     const mapPicked = !!parseInt(document.getElementById('map-size-sel').value);
-    btn.disabled = devMode ? !mapPicked : ((readyCount || 0) < 1 || (!SOLO_TEST && (playerCount || 0) < 2) || !mapPicked);
+    btn.disabled = !mapPicked || !othersReady || (!SOLO_TEST && players.length < 2);
+    btn.title = othersReady ? '' : 'Waiting for every player to be ready';
   }
+}
+
+function kickPlayer(id) {
+  if (!gameLobbyRoom || !isMaster) return;
+  gameLobbyRoom.send('room:kick', { id });
 }
 
 function clickReady() {
@@ -649,6 +675,7 @@ function copyRoomCode(btn) {
 function joinErrorText(e) {
   const m = String((e && e.message) || '');
   if (/wrong password/i.test(m)) return 'Wrong password for this room';
+  if (/removed from this room/i.test(m)) return m;
   if (/already started/i.test(m)) return 'That match has already started';
   // Colyseus locks a lobby both when it fills up and when its match starts.
   if (/already full|is locked/i.test(m)) return 'That room is full or its match has already started';

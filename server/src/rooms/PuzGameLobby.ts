@@ -24,6 +24,8 @@ export class PuzGameLobby extends Room {
   // a join already in flight). A full lobby (maxClients) is refused by
   // Colyseus itself.
   private launched = false;
+  // Accounts the host removed: they can't come back into this lobby.
+  private kickedUserIds = new Set<number>();
 
   // Runs during matchmaking, before any seat is reserved, so a player who
   // isn't logged in on tenten.run never gets a lobby created or joined.
@@ -57,10 +59,12 @@ export class PuzGameLobby extends Room {
     this.onMessage("room:launch", async (client: Client, data: any) => {
       const p = this.lobbyPlayers[client.sessionId];
       if (!p || !p.master) return;
-      const isDev = data?.dev === true;
       const players = Object.values(this.lobbyPlayers);
-      if (!isDev && players.filter(pp => pp.ready).length < 1) {
-        client.send('room:error', { message: 'Need at least 1 ready player' });
+      // Ready-check: every player except the host must have pressed Ready
+      // (the host starts instead of readying). Enforced here for every
+      // launch — a client flag can't skip it.
+      if (!players.filter(pp => !pp.master).every(pp => pp.ready)) {
+        client.send('room:error', { message: 'Waiting for every player to be ready' });
         return;
       }
       if (this.launched) return;
@@ -98,6 +102,22 @@ export class PuzGameLobby extends Room {
       }
     });
 
+    // Host kick: only the host, never themselves; the removed player is told
+    // why, disconnected from this lobby, and can't rejoin it.
+    this.onMessage("room:kick", (client: Client, data: any) => {
+      const p = this.lobbyPlayers[client.sessionId];
+      if (!p || !p.master) { client.send('room:error', { message: 'Only the host can remove players' }); return; }
+      if (this.launched) return;
+      const targetId = String(data?.id || '');
+      if (targetId === client.sessionId) { client.send('room:error', { message: "You can't remove yourself" }); return; }
+      const target = this.lobbyPlayers[targetId];
+      if (!target) { client.send('room:error', { message: 'Player not found' }); return; }
+      this.kickedUserIds.add(target.userId);
+      const targetClient = this.clients.find(c => c.sessionId === targetId);
+      targetClient?.send('room:kicked', { message: 'You were removed by the host' });
+      targetClient?.leave(4000);
+    });
+
     this.onMessage("room:talk", (client: Client, data: any) => {
       const p = this.lobbyPlayers[client.sessionId];
       this.broadcast('room:talk', {
@@ -114,6 +134,9 @@ export class PuzGameLobby extends Room {
   async onJoin(client: Client, options: any, auth: PuzAuth) {
     if (this.launched) {
       throw new Error("This match has already started");
+    }
+    if (this.kickedUserIds.has(auth.userId)) {
+      throw new Error("You were removed from this room by the host");
     }
     if (this.lobbyPassword && options.password !== this.lobbyPassword) {
       throw new Error("Wrong password");
